@@ -1,0 +1,128 @@
+/*
+ * WHAT IS THIS FILE?
+ *
+ * Styles for the small Equalify icon that sits next to a PDF link.
+ *
+ * WHY IS IT SO SHORT?
+ *
+ * Because the icon lives inside somebody else's design. Every rule here is one we
+ * would have to fight the theme over if we got it wrong, so there are only rules
+ * that are genuinely needed. Colour, in particular, is deliberately absent: the SVG
+ * uses fill="currentColor", so it takes the theme's own link colour and inherits
+ * whatever contrast the theme has already got right.
+ *
+ * WHY NO CSS RESET, NO !important, NO WEB FONT?
+ *
+ * Because this stylesheet loads on every page of every site in the network. It has
+ * to be a guest, not a landlord.
+ */
+
+/*
+ * The icon link.
+ *
+ * inline-flex with vertical-align keeps the icon on the text baseline of the link
+ * next to it, which is the one thing that looks obviously broken if it is wrong.
+ */
+.equalify-iris-icon-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+
+	/* A small gap so the icon reads as a separate control, not part of the word. */
+	margin-inline-start: 0.25em;
+	vertical-align: text-bottom;
+
+	/* No underline on an icon — there is no text for the line to belong to. */
+	text-decoration: none;
+
+	/*
+	 * The touch target. 24px of icon inside a 44px-ish target is the difference
+	 * between an icon somebody can tap and one they keep missing. Padding rather
+	 * than width so the icon itself stays 24px.
+	 */
+	padding: 0.35em;
+	border-radius: 4px;
+
+	/* Never let a narrow column squash the icon out of shape. */
+	flex: 0 0 auto;
+}
+
+.equalify-iris-icon-link svg {
+	width: 24px;
+	height: 24px;
+
+	/* Stops the SVG adding a few pixels of line-height below itself. */
+	display: block;
+}
+
+/*
+ * The focus ring.
+ *
+ * Keyboard users find this link by tabbing to it, and an icon link with no visible
+ * focus is genuinely unusable. outline rather than border, so nothing moves when it
+ * appears; outline-offset so the ring is not drawn on top of the mark.
+ *
+ * :focus-visible so a mouse click does not leave a ring behind, with a plain :focus
+ * fallback for browsers that do not know :focus-visible.
+ */
+.equalify-iris-icon-link:focus {
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+
+.equalify-iris-icon-link:focus:not(:focus-visible) {
+	outline: none;
+}
+
+.equalify-iris-icon-link:focus-visible {
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+
+/* A gentle hover, using the current text colour so it works on any background. */
+.equalify-iris-icon-link:hover {
+	background-color: rgba(0, 0, 0, 0.06);
+}
+
+/*
+ * The visually hidden label.
+ *
+ * The same rules WordPress uses for .screen-reader-text. They are repeated here
+ * because we cannot assume the theme defines that class — and if it does not, and we
+ * do not, the label becomes visible text next to every icon.
+ *
+ * Note what this does NOT use: display:none and visibility:hidden both remove the
+ * text from screen readers as well as from the screen, which would defeat the entire
+ * purpose. Clipping it to a 1px box is how you hide something visually while leaving
+ * it readable by assistive technology.
+ */
+.equalify-iris-icon-label {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/*
+ * Windows High Contrast Mode and other forced-colours modes.
+ *
+ * These modes replace the page's colours entirely, and SVG fills are one of the
+ * things that get lost. forced-color-adjust: auto asks the browser to remap our
+ * fill to a system colour rather than leaving an invisible icon.
+ */
+@media (forced-colors: active) {
+	.equalify-iris-icon-link svg {
+		forced-color-adjust: auto;
+	}
+
+	.equalify-iris-icon-link:focus,
+	.equalify-iris-icon-link:focus-visible {
+		outline: 2px solid LinkText;
+	}
+}

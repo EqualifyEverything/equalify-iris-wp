@@ -1,0 +1,256 @@
+/*
+ * WHAT IS THIS FILE?
+ *
+ * Styles for the accessible document page itself.
+ *
+ * THE GUIDING RULE: STYLE OUR FURNITURE, NOT THE DOCUMENT.
+ *
+ * Everything the plugin adds — the note explaining what this page is, the facts
+ * list, the table of contents, the skip link — is styled here. The document's own
+ * content is left almost entirely to the theme, so a converted document looks like
+ * it belongs to the site it is on.
+ *
+ * The two exceptions are tables and figures, which get the minimum needed to stay
+ * readable. Themes vary wildly in how they handle tables they did not expect, and a
+ * data table that has lost its borders is much harder to follow, which is exactly
+ * the problem this plugin sets out to fix.
+ */
+
+/* --------------------------------------------------------------------------
+ * The skip link
+ *
+ * Hidden until it has keyboard focus, then it appears at the top of the page. This
+ * is the standard pattern: invisible to everyone who does not need it, and the
+ * first thing a keyboard user reaches.
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-skip-link {
+	position: absolute;
+	left: -9999px;
+	top: 0;
+	z-index: 100000;
+	padding: 0.75em 1.25em;
+	background: #fff;
+	color: #111;
+	border: 2px solid currentColor;
+	text-decoration: underline;
+}
+
+.equalify-iris-skip-link:focus {
+	left: 0.5rem;
+	top: 0.5rem;
+}
+
+/* --------------------------------------------------------------------------
+ * The header we add above the document
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document-header {
+	margin-bottom: 2rem;
+}
+
+/*
+ * The "this is a machine-made version" note.
+ *
+ * A left border and a tinted background rather than a coloured box, so it reads as
+ * an aside and not as a warning. It is information, not a problem.
+ *
+ * currentColor for the border means it works on a light or dark theme without us
+ * guessing which one we are in.
+ */
+.equalify-iris-document-note {
+	border-inline-start: 4px solid currentColor;
+	padding: 0.75rem 1rem;
+	background: rgba(0, 0, 0, 0.04);
+	font-size: 0.95em;
+}
+
+/* The facts list: original PDF, where it appears, when it was converted. */
+.equalify-iris-document-facts {
+	list-style: none;
+	margin: 1rem 0 0;
+	padding: 0;
+}
+
+.equalify-iris-document-facts > li {
+	margin: 0.35rem 0;
+}
+
+/*
+ * The link to the original PDF is the most important thing in the header, so it is
+ * the only thing given weight. Never hide the way out of our version.
+ */
+.equalify-iris-original-link {
+	font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+ * The table of contents
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-toc {
+	margin: 0 0 2.5rem;
+	padding: 1rem 1.25rem;
+	border: 1px solid rgba(0, 0, 0, 0.15);
+	border-radius: 4px;
+}
+
+.equalify-iris-toc h2 {
+	margin-top: 0;
+	font-size: 1.1em;
+}
+
+.equalify-iris-toc ol {
+	margin: 0;
+	padding-inline-start: 1.5rem;
+}
+
+.equalify-iris-toc li {
+	margin: 0.3rem 0;
+}
+
+/*
+ * Indent deeper headings so the document's shape is visible at a glance.
+ *
+ * Indentation only — no changed list markers and no nested lists. A screen reader
+ * announces a nested list's depth, which would be useful, but building real nesting
+ * from a flat list of headings goes wrong the moment a document skips a level, and
+ * documents skip levels constantly. A flat list that is always correct beats a
+ * nested one that is sometimes wrong.
+ */
+.equalify-iris-toc-level-3 {
+	margin-inline-start: 1.25rem;
+}
+
+.equalify-iris-toc-level-4 {
+	margin-inline-start: 2.5rem;
+}
+
+/* --------------------------------------------------------------------------
+ * The document's own content
+ *
+ * Deliberately minimal. See the note at the top of this file.
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document-body {
+	/*
+	 * A measure limit. Long lines are hard to track back from at the end, and a
+	 * converted document is often a wall of text with no images to break it up.
+	 * 70ch is a comfortable measure for continuous reading.
+	 */
+	max-width: 70ch;
+}
+
+/* Tables can be wider than the measure — they are data, not prose. */
+.equalify-iris-document-body table {
+	max-width: none;
+	width: 100%;
+	border-collapse: collapse;
+	margin: 1.5rem 0;
+}
+
+.equalify-iris-document-body th,
+.equalify-iris-document-body td {
+	border: 1px solid rgba(0, 0, 0, 0.2);
+	padding: 0.5rem 0.65rem;
+	text-align: start;
+	vertical-align: top;
+}
+
+/* Header cells need to look like header cells, not just be marked as them. */
+.equalify-iris-document-body th {
+	background: rgba(0, 0, 0, 0.05);
+	font-weight: 600;
+}
+
+/* A table's caption is its accessible name. Keep it visible and attached. */
+.equalify-iris-document-body caption {
+	caption-side: top;
+	text-align: start;
+	font-weight: 600;
+	padding-bottom: 0.5rem;
+}
+
+.equalify-iris-document-body figure {
+	margin: 1.5rem 0;
+}
+
+.equalify-iris-document-body figcaption {
+	font-size: 0.95em;
+	opacity: 0.85;
+	margin-top: 0.35rem;
+}
+
+/*
+ * Form controls in a converted document are inert placeholders standing in for
+ * fill-in fields in the original. Making them look like fields, and unmistakably
+ * not-editable, stops anyone trying to submit our copy.
+ */
+.equalify-iris-document-body input[readonly],
+.equalify-iris-document-body textarea[readonly] {
+	background: rgba(0, 0, 0, 0.04);
+	border: 1px solid rgba(0, 0, 0, 0.25);
+	padding: 0.35rem 0.5rem;
+}
+
+.equalify-iris-document-body fieldset {
+	border: 1px solid rgba(0, 0, 0, 0.2);
+	padding: 1rem;
+	margin: 1.5rem 0;
+}
+
+/*
+ * Footnote references.
+ *
+ * The target highlight matters more than it looks: after jumping to footnote 12,
+ * finding which of a dozen identical lines you landed on is genuinely hard without
+ * it.
+ */
+.equalify-iris-document-body sup a {
+	text-decoration: none;
+	padding: 0 0.15em;
+}
+
+.equalify-iris-document-body :target {
+	background: rgba(255, 230, 0, 0.35);
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+ * The footer we add below the document
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document-footer {
+	margin-top: 3rem;
+	padding-top: 1rem;
+	border-top: 1px solid rgba(0, 0, 0, 0.15);
+	font-size: 0.95em;
+}
+
+/* --------------------------------------------------------------------------
+ * Printing
+ *
+ * People print these. Our furniture is not part of the document, so it goes.
+ * -------------------------------------------------------------------------- */
+
+@media print {
+	.equalify-iris-skip-link,
+	.equalify-iris-toc,
+	.equalify-iris-document-footer {
+		display: none;
+	}
+
+	.equalify-iris-document-body {
+		max-width: none;
+	}
+}
+
+/* Respect a reader who has asked for less movement. Nothing here animates, but
+ * saying so keeps the intent clear if anything is added later. */
+@media (prefers-reduced-motion: reduce) {
+	.equalify-iris-document * {
+		animation: none !important;
+		transition: none !important;
+	}
+}

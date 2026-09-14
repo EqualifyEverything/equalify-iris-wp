@@ -1,0 +1,17 @@
+# Mount the plugin straight into the test site.
+#
+# WHY A BIND MOUNT AND NOT A SYMLINK?
+#
+# The plugin source lives one folder up, outside this DDEV project, so it is not part
+# of what DDEV mounts into the container. A symlink pointing out of the project would
+# resolve to a path that does not exist inside the container.
+#
+# A bind mount does work, and it means you edit the real plugin files in
+# ../../plugin/equalify-iris and the change is live in the test site immediately. No
+# copying, no build step, and no chance of testing a stale copy.
+#
+# Paths here are relative to this .ddev folder.
+services:
+  web:
+    volumes:
+      - "../../plugin/equalify-iris:/var/www/html/wp/wp-content/plugins/equalify-iris"

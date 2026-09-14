@@ -1,0 +1,35 @@
+# A throwaway WordPress multisite for testing the Equalify Iris plugin.
+#
+# WHY DDEV AND NOT SOMETHING SIMPLER?
+#
+# Because WordPress multisite needs MySQL or MariaDB. The lightweight options
+# (wp-env's SQLite mode, `wp server`, Laravel Valet) either cannot do multisite at
+# all or need enough setting up that DDEV ends up being the simpler answer.
+#
+# Everything here is disposable. `./reset.sh` deletes it and builds it again.
+
+name: equalify-iris-test
+type: wordpress
+
+# WordPress lives in wp/ rather than at the top of this folder, so the scripts and
+# the DDEV config are not sitting inside the thing they install.
+docroot: wp
+
+php_version: "8.3"
+webserver_type: nginx-fpm
+
+database:
+  type: mariadb
+  version: "10.11"
+
+# Turn on with `ddev xdebug on` when you need to step through a tick.
+xdebug_enabled: false
+
+use_dns_when_possible: true
+composer_version: "2"
+corepack_enable: false
+
+additional_hostnames: []
+additional_fqdns: []
+
+web_environment: []

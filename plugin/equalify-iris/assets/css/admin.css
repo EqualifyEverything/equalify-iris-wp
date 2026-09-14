@@ -1,0 +1,174 @@
+/*
+ * WHAT IS THIS FILE?
+ *
+ * Styles for the four Network Admin screens.
+ *
+ * WHY IS IT SMALL?
+ *
+ * Because WordPress's own admin styles already do almost everything: .wrap,
+ * .widefat, .form-table, .notice, .button and .nav-tab-wrapper are all core classes.
+ * Using them rather than replacing them means these screens look like WordPress,
+ * inherit its colour schemes and dark mode, and keep working when WordPress changes
+ * its design.
+ *
+ * So this file only styles the handful of things WordPress has no class for.
+ */
+
+/* A card. Matches the look of core's postbox without pulling in its JavaScript. */
+.equalify-iris .equalify-iris-panel {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+	padding: 0.5rem 1.25rem 1.25rem;
+	margin: 1.25rem 0;
+	max-width: 50rem;
+}
+
+/* The "what Equalify Iris shares" panel, which needs to stand out enough to read. */
+.equalify-iris .equalify-iris-panel-notice {
+	border-inline-start: 4px solid #dba617;
+}
+
+.equalify-iris .equalify-iris-intro {
+	max-width: 50rem;
+	font-size: 1.05em;
+}
+
+/*
+ * The ON / OFF badge.
+ *
+ * Colour AND a word, never colour alone. Someone who cannot distinguish the two
+ * colours still reads "ON", and the state survives being printed in black and white
+ * or read aloud.
+ */
+.equalify-iris-badge {
+	display: inline-block;
+	padding: 0.15em 0.6em;
+	border-radius: 3px;
+	font-weight: 700;
+	font-size: 0.85em;
+	letter-spacing: 0.04em;
+	vertical-align: middle;
+}
+
+.equalify-iris-badge-on {
+	background: #00694e;
+	color: #fff;
+}
+
+.equalify-iris-badge-off {
+	background: #50575e;
+	color: #fff;
+}
+
+.equalify-iris-state {
+	font-size: 1.05em;
+}
+
+/* Buttons sit in their own forms, so they need laying out as a row. */
+.equalify-iris-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+	margin: 1rem 0;
+}
+
+.equalify-iris-buttons form {
+	margin: 0;
+}
+
+/* The list of things needing attention, inside a core notice. */
+.equalify-iris-problems {
+	margin: 0.5em 0 0.75em 1.5em;
+	list-style: disc;
+}
+
+.equalify-iris-problems li {
+	margin-bottom: 0.4em;
+}
+
+/* Cron lines and commands, which must be copyable exactly as shown. */
+.equalify-iris-code {
+	background: #f6f7f7;
+	border: 1px solid #dcdcde;
+	padding: 0.75rem 1rem;
+	overflow-x: auto;
+	white-space: pre;
+	font-size: 0.9em;
+	max-width: 100%;
+}
+
+/* The filter bar on the Documents screen. */
+.equalify-iris-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+	margin: 1rem 0;
+}
+
+/* A failure reason. Readable, not alarming — it is information, not a siren. */
+.equalify-iris-error {
+	color: #8a1f11;
+	font-size: 0.9em;
+}
+
+/* Keep a Retry button from stretching its table cell. */
+.equalify-iris-documents form {
+	margin: 0;
+}
+
+.equalify-iris-pagination {
+	margin: 1rem 0;
+}
+
+/* The activity log: a coloured left edge, alongside the "Kind" column's word. */
+.equalify-iris-log tr.equalify-iris-log-error th,
+.equalify-iris-log tr.equalify-iris-log-error td:first-child {
+	box-shadow: inset 4px 0 0 #d63638;
+}
+
+.equalify-iris-log tr.equalify-iris-log-warning th,
+.equalify-iris-log tr.equalify-iris-log-warning td:first-child {
+	box-shadow: inset 4px 0 0 #dba617;
+}
+
+.equalify-iris-log td:first-child {
+	white-space: nowrap;
+}
+
+/* The collapsed "advanced" section. */
+.equalify-iris-advanced {
+	margin-top: 1.5rem;
+}
+
+.equalify-iris-advanced summary {
+	cursor: pointer;
+	font-weight: 600;
+	padding: 0.35rem 0;
+}
+
+.equalify-iris-rules {
+	margin: 0.5em 0 1em 1.5em;
+	list-style: disc;
+	max-width: 50rem;
+}
+
+.equalify-iris-rules li {
+	margin-bottom: 0.4em;
+}
+
+/*
+ * The counts table has a caption for screen readers only. Core's .screen-reader-text
+ * exists in the admin, but a <caption> is styled by some admin colour schemes, so it
+ * is pinned here too.
+ */
+.equalify-iris table caption.screen-reader-text {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	clip-path: inset(50%);
+}

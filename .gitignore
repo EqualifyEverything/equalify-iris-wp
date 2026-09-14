@@ -1,0 +1,35 @@
+# The test WordPress instance is disposable and is not part of this repo.
+#
+# What IS committed is the small amount of scaffolding that builds it: the DDEV config,
+# the setup scripts, and the sample-PDF generator. Everything they produce is ignored.
+# So a clone of this repo has no WordPress in it, and one run of test-site/setup.sh
+# gives you a working one.
+
+# WordPress core, wp-config.php, uploads, the lot.
+test-site/wp/*
+!test-site/wp/.gitkeep
+
+# Generated sample PDFs.
+test-site/samples/
+
+# DDEV writes its own .ddev/.gitignore listing the files it generates, so the config
+# we hand-wrote stays tracked and the generated ones do not. Nothing needed here.
+
+# Anything else a local WordPress leaves lying about.
+*.sql
+*.sql.gz
+debug.log
+
+# Editor and operating system litter.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Never in a repo.
+node_modules/
+vendor/
+.env
+.env.*
