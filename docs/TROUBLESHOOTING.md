@@ -66,8 +66,8 @@ If that does work and the scheduled version does not, the problem is scheduling,
 wp cron event list | grep equalify_iris
 ```
 
-Nothing listed? Visit any Network Admin page — the plugin reschedules itself on `admin_init` — or
-deactivate and reactivate it network-wide.
+Nothing listed? Deactivate and reactivate it network-wide, which schedules it immediately, or visit
+any Network Admin page — the plugin also reschedules itself on `admin_init`.
 
 Note the job is only scheduled on the **main site** of the network. That is correct: one job for the
 whole network, not one per site.
@@ -299,7 +299,13 @@ The content filter rewrites anchors in post content. It cannot rewrite:
 ### 4. Is the page cached?
 
 The icon is server-rendered, which means it is in the cached HTML — good — but it also means a page
-cached *before* the document was published still has no icon. Clear the cache for that page.
+cached *before* the document was published still has no icon. The plugin calls `clean_post_cache()`
+on every linking page when an accessible version goes live or comes down, which most page-cache
+plugins act on. A CDN or Varnish will not; purge from the `equalify_iris_linking_pages_changed`
+action, or clear the cache for that page by hand.
+
+The same applies the other way round: a page cached while the plugin was on keeps its icons after
+deactivation until that cache expires, and those icons now lead to a 404.
 
 ### 5. Is the PDF link pointing somewhere unexpected?
 
@@ -309,24 +315,109 @@ signed URL that rewrites the path.
 
 ### 6. Does the page have a sighting?
 
-Icons come from the sightings table, not from searching content at render time. If a page was
-published before the plugin was installed and has not been swept or updated since, it may have no
-sighting yet. Republishing the page, or letting the sweep reach it, fixes that.
+Sightings are the fast path, not the only one. A PDF linked from a post the sweeper has reached is
+found by one indexed lookup; a PDF linked from a widget, a block-theme template part or an excerpt —
+none of which the sweeper scans — is found by matching the URL path instead. So a missing sighting is
+not by itself the explanation. What a missing sighting does cost is the "Appears on" link on the
+document page, which has no fallback.
 
 ---
 
 ## The document page looks wrong
 
-### The theme's styles fight it
+### It does not look like the rest of the site, and that is deliberate
 
-`document.css` deliberately styles almost nothing of the document itself, so it inherits the theme.
-If the result is unreadable, override the whole template: add `single-equalify_iris_doc.php` to the
-theme. That is ordinary WordPress template hierarchy and needs no knowledge of this plugin.
+The document page is a standalone HTML document. It does not print the theme's header or footer, and
+`class-frontend.php` takes the theme's stylesheets and web fonts out of the queue for that one page.
+It was not always so — see the top of `templates/single-document.php` for the three reasons it
+changed, the worst of which is that on a block theme `get_header()` fell back to WordPress's
+deprecated theme-compat header and gave the page a second `<h1>` holding the site name.
 
-### There is no table of contents
+There is no site furniture at all any more, not even the site's name. The link home is inside the
+About panel, described below.
+
+### Where is the download link? And the title, the date, the contents?
+
+Behind the two panels at the top of the page — **Contents**, and **About this accessible version of
+a PDF**. Both are closed when the page loads. Nothing is missing; it is one click away, and the
+click is labelled.
+
+That is the point of the design. The page exists to be read, so what a reader meets first is the
+document, not four paragraphs of the plugin explaining itself. The About panel holds two sentences
+saying where the page came from and what to do if it looks wrong, the link to the original PDF with
+its page count and size, the page the PDF appears on, the site it belongs to, and the date it was
+converted.
+
+"Equalify Iris" in that note links to the project. To point it somewhere else — a network running its
+own Iris usually has its own page explaining it — filter `equalify_iris_project_url`. Returning an
+empty string leaves the name as plain text.
+
+The document's own title stays visible above the panels, set small. It is deliberately not inside a
+panel: the content of a closed `<details>` is removed from the accessibility tree, so hiding it
+would leave the page with no heading at all until the document's own headings began.
+
+The panels are `<details>` elements. There is no JavaScript on the page, so they work with scripting
+off, in a text browser, and if this plugin's stylesheet fails to load.
+
+### The panels do not open
+
+Then something is overriding the page's CSS or the browser is very old — `<details>` needs no
+script, so there is nothing here that can fail on its own. Check for another plugin injecting CSS
+onto the front end, and check the browser console for a content-security-policy error.
+
+### A printed copy is missing the panels
+
+Correct, and it is not losing anything important. A closed `<details>` cannot be forced open by CSS,
+in print or anywhere else, so the one line that must survive onto paper — that the page was made
+automatically from a PDF — is printed by a separate paragraph that is `display: none` on screen,
+along with the address of the original PDF. The document's title prints too, at full size.
+
+### I want the site's header and footer back
+
+Return false from the `equalify_iris_document_standalone` filter. That leaves the theme's stylesheets
+in the queue, and it is worth pairing with a `single-equalify_iris_doc.php` template in the theme
+that calls `get_header()` and `get_footer()` itself — the filter controls the stylesheets, not the
+markup, because the markup belongs to whichever template is running.
+
+```php
+add_filter( 'equalify_iris_document_standalone', '__return_false' );
+```
+
+### I want to change the colours or the type size
+
+There is no need to replace anything. Every colour, size and space is a custom property, declared on
+both `.equalify-iris-viewer` (the page) and `.equalify-iris-document` (the document region). Set them
+again from a small stylesheet of your own:
+
+```css
+.equalify-iris-viewer,
+.equalify-iris-document {
+	--eq-measure: 44rem;   /* the reading column; 38rem by default */
+	--eq-link: #7b1fa2;
+	--eq-font-doc: "Atkinson Hyperlegible", Georgia, serif;
+}
+```
+
+The full list is at the top of `assets/css/document.css`. Note the contrast note there before
+changing `--eq-ink` or `--eq-link`: the defaults are at least 7:1 against their background, which is
+AAA, and the point of the page is being readable.
+
+### There is no Contents panel
 
 It only appears when the document has three or more headings. Below that, a contents list costs more
-to read than it saves.
+to read than it saves. The About panel is always there.
+
+### The stored content contains a `<main>` and a `<title>` and the page does not
+
+Both are removed on the way out, by a filter in `class-frontend.php`, and neither is stored any more
+for anything converted since. Iris converts a PDF into a whole HTML document, so its output arrives
+wrapped in the furniture of a page: a `<main>` that would nest inside the template's own and give the
+page two main landmarks, and a `<title>` holding the source filename, which can decide what the
+browser tab and any bookmark say.
+
+Documents converted before that fix still have both in the database. That is deliberate — the filter
+removes them when the page renders rather than rewriting thousands of posts, because a migration can
+half-finish and it edits the only copy of the converted document there is. Nothing needs doing.
 
 ### The URL 404s
 
@@ -399,8 +490,9 @@ your PHP error log.
 
 ## Uninstalling and starting over
 
-- **Deactivating** stops the job and flushes rewrite rules. It deletes nothing. You can reactivate
-  and carry on exactly where you were.
+- **Deactivating** stops the job, removes the icons, and makes every accessible version's address
+  answer 404. It deletes nothing. Reactivating brings them back, retires any whose only linking page
+  was unpublished in the meantime, and reopens the sweep to catch other edits.
 - **Deleting** the plugin drops the two tables and every setting — but deliberately **leaves the
   converted pages in place**, because they are live URLs people have bookmarked and shared. They
   become invisible orphaned posts, harmless, and still there if the plugin comes back.

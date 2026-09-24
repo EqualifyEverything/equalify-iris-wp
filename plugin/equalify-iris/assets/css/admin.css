@@ -99,13 +99,23 @@
 	max-width: 100%;
 }
 
-/* The filter bar on the Documents screen. */
+/*
+ * The filter bar on the Documents screen.
+ *
+ * Its labels are there but not drawn (see render_filters), so the row is three controls
+ * and a button. The search box is given a width here because an unsized <input> is wider
+ * than the two dropdowns beside it, which made the row look accidental.
+ */
 .equalify-iris-filters {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.5rem;
 	align-items: center;
-	margin: 1rem 0;
+	margin: 1rem 0 0.75rem;
+}
+
+.equalify-iris-filters input[type="search"] {
+	width: 14rem;
 }
 
 /* A failure reason. Readable, not alarming — it is information, not a siren. */
@@ -114,9 +124,77 @@
 	font-size: 0.9em;
 }
 
-/* Keep a Retry button from stretching its table cell. */
-.equalify-iris-documents form {
-	margin: 0;
+/*
+ * The bulk action bar, between the filter bar and the table.
+ *
+ * The problem this spacing solves: two rows of dropdown-plus-button, stacked, read as
+ * two of the same thing, and you have to read the options to find out which one filters
+ * and which one acts. So this one is pinned to the top edge of the table it belongs to
+ * and separated from the filters above, which puts it on the table's side of the gap.
+ * Nothing here is decoration — it is the only thing telling you what the bar is for
+ * before you open it.
+ */
+.equalify-iris-bulk {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+	margin: 0 0 0.5rem;
+}
+
+/* Long option text should not stretch the select across the screen. */
+.equalify-iris-bulk select {
+	max-width: 20rem;
+}
+
+/* The tick column. Narrow, and top-aligned so the box lines up with the file name
+ * rather than floating in the middle of a three-line cell. */
+.equalify-iris-documents .check-column {
+	width: 2.5rem;
+	padding-top: 0.6rem;
+	vertical-align: top;
+}
+
+/*
+ * The quiet line under a file name: page count, how many pages link to it, attempts.
+ *
+ * Core's .description is italic, which is right for a hint under a form field and
+ * wrong for a row of facts — italics at this size are just harder to read.
+ */
+.equalify-iris-documents .description {
+	font-style: normal;
+	font-size: 0.9em;
+}
+
+/*
+ * The "are you sure?" panel.
+ *
+ * It is a core notice, but core only pads the paragraphs inside one, and this notice
+ * holds a heading, a list, a text field and two buttons.
+ */
+.equalify-iris-confirm {
+	max-width: 50rem;
+	padding: 0.25rem 1.25rem 0.75rem;
+}
+
+.equalify-iris-confirm h2 {
+	font-size: 1.15em;
+}
+
+.equalify-iris-confirm-list {
+	margin: 0 0 1em 1.5em;
+	list-style: disc;
+}
+
+.equalify-iris-confirm-list li {
+	margin-bottom: 0.25em;
+}
+
+/* A sentence introducing a button, rather than a heading over it. */
+.equalify-iris-aside {
+	max-width: 50rem;
+	margin: 1.5rem 0 0.5rem;
+	color: #50575e;
 }
 
 .equalify-iris-pagination {

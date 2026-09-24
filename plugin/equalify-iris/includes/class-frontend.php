@@ -26,7 +26,7 @@
  *
  * 2. ONE DATABASE QUERY PER PAGE, NO MATTER HOW MANY PDFS.
  *
- *    See Documents::published_for_post(). The sightings table already records which
+ *    See Documents::with_page_for_post(). The sightings table already records which
  *    PDFs are on which post, so we ask once and get everything.
  *
  * 3. IT IS A SEPARATE LINK, NOT A CHANGE TO THE EXISTING ONE.
@@ -34,6 +34,20 @@
  *    The original PDF link keeps working exactly as it did. Some people want the
  *    PDF — to print it, to file it, because it is the legal record. We are adding a
  *    choice, not taking one away.
+ *
+ * 4. THE ACCESSIBLE VERSION IS ANNOUNCED BEFORE THE PDF, AND SHOWN AFTER IT.
+ *
+ *    Someone reading with a screen reader should not have to get past the PDF link
+ *    to find out there is a better option, and someone reading with their eyes
+ *    expects the little icon to sit after the thing it belongs to. Those two wants
+ *    pull in opposite directions.
+ *
+ *    So the order in the HTML is: a screen-reader-only sentence, then the PDF link
+ *    untouched, then the icon. The sentence is heard first and takes up no space;
+ *    the icon is seen after and is the only visible addition. Nothing is reordered
+ *    with CSS, so what a keyboard user tabs through and what a sighted user sees are
+ *    the same sequence — which is the thing that goes wrong when people solve this
+ *    with `order` or `flex-direction: row-reverse`.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -43,11 +57,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Equalify_Iris_Frontend {
 
 	/**
-	 * Documents for the post we are currently rendering, so we look them up once.
+	 * Every PDF path we have looked up this request: path => entry, or false for a
+	 * PDF with no accessible version.
 	 *
-	 * @var array<int, array>
+	 * Remembering the misses matters as much as remembering the hits. Most PDFs on
+	 * most sites have not been converted yet, and the same PDF is often linked from
+	 * several places on one page.
+	 *
+	 * @var array<int, array<string, array|false>>
 	 */
-	private array $cache = array();
+	private array $known = array();
+
+	/** Posts whose sightings we have already read: site id => post id => true. */
+	private array $warmed = array();
 
 	public function init(): void {
 		// Priority 20, which is after wpautop (10) and after most content filters.
@@ -56,16 +78,76 @@ class Equalify_Iris_Frontend {
 		// belongs to.
 		add_filter( 'the_content', array( $this, 'add_icons' ), 20 );
 
+		// The other places a PDF gets linked. Post content is the common one, but a
+		// PDF in a sidebar widget, a footer template or an archive excerpt is just as
+		// much a PDF somebody is about to download, and it was getting no icon at all.
+		//
+		// Running on all of them is safe because a link that already carries our data
+		// attribute is skipped (see rewrite_links), so the passes cannot compound: on
+		// a block theme the block pass tags the link and the content pass leaves it be.
+		add_filter( 'the_excerpt', array( $this, 'add_icons' ), 20 );
+		add_filter( 'widget_text_content', array( $this, 'add_icons' ), 20 );
+		add_filter( 'widget_block_content', array( $this, 'add_icons' ), 20 );
+		add_filter( 'render_block', array( $this, 'add_icons_to_block' ), 20, 2 );
+
+		// Priority 5, before wpautop and before the icon pass, because it removes tags
+		// rather than adding any and there is no reason for anything else to see them.
+		add_filter( 'the_content', array( $this, 'unwrap_stored_page_furniture' ), 5 );
+
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_styles' ) );
+		add_action( 'wp_enqueue_scripts', array( $this, 'strip_theme_design' ), 100 );
 	}
 
 	/**
-	 * Add an icon after every PDF link that has an accessible version.
+	 * Take the <main> and <title> out of a document that was converted before the
+	 * cleaner started doing it.
+	 *
+	 * WHY THIS EXISTS AS WELL AS THE CLEANER
+	 *
+	 * class-html-cleaner.php now strips both tags on the way in, which fixes every
+	 * document converted from here on and none of the ones already stored. Their HTML is
+	 * in the database, complete with a <main> that nests inside the template's own and a
+	 * <title> holding the source filename — so the two problems that fix was for are
+	 * still on every existing document page.
+	 *
+	 * The alternative was a migration that rewrote stored post content. This is better:
+	 * rewriting thousands of posts is a job that can half-finish, and it edits the one
+	 * copy of the converted document we have. A filter on the way out cannot lose
+	 * anything, and it costs a `stripos` on a page that has neither tag.
+	 *
+	 * WHY IT IS SAFE TO RUN ON EVERY DOCUMENT
+	 *
+	 * It is scoped to our own post type, so it cannot touch an ordinary post that
+	 * legitimately contains the word "main". Within our post type there is no such thing
+	 * as a <main> we want: the template provides the only one the page should have.
 	 */
-	public function add_icons( string $content ): string {
+	public function unwrap_stored_page_furniture( string $content ): string {
+		if ( ! is_singular( Equalify_Iris_Post_Type::POST_TYPE ) || ! is_main_query() ) {
+			return $content;
+		}
+
+		if ( false === stripos( $content, '<main' ) && false === stripos( $content, '<title' ) ) {
+			return $content;
+		}
+
+		// The same two rules as the cleaner, for the same reasons — the <title> goes with
+		// its text, the <main> is unwrapped and keeps the document inside it. Kept here
+		// rather than shared with the cleaner because these are the only two lines, and a
+		// shared helper would put the fix for old documents and the fix for new ones in
+		// one place where changing either changes both.
+		$content = (string) preg_replace( '#<title\b[^>]*>.*?</title\s*>#is', '', $content );
+
+		return (string) preg_replace( '#</?main\b[^>]*>#i', '', $content );
+	}
+
+	/**
+	 * Add an icon after every PDF link in this piece of HTML that has an accessible
+	 * version.
+	 */
+	public function add_icons( string $content, bool $once_per_pdf = false ): string {
 		// The cheapest possible early exit, and the one that matters most: almost
-		// every page on the network has no PDF on it at all, and those pages should
-		// cost us a single string search and nothing else.
+		// nothing on the network has a PDF in it, and all of that should cost us a
+		// single string search and nothing else.
 		if ( false === stripos( $content, '.pdf' ) ) {
 			return $content;
 		}
@@ -74,60 +156,161 @@ class Equalify_Iris_Frontend {
 			return $content;
 		}
 
-		$post_id = get_the_ID();
-
-		if ( ! $post_id ) {
-			return $content;
-		}
-
-		$documents = $this->documents_for_post( (int) $post_id );
+		$documents = $this->documents_in( $content );
 
 		if ( ! $documents ) {
 			return $content;
 		}
 
-		return $this->rewrite_links( $content, $documents );
+		return $this->rewrite_links( $content, $documents, $once_per_pdf );
 	}
 
 	/**
-	 * The accessible versions available on one post, keyed by PDF URL.
+	 * One block's HTML.
 	 *
-	 * @return array<string, array{url: string, title: string}>
+	 * WHY BLOCKS GET `once_per_pdf`
+	 *
+	 * Because a single block can link the same PDF twice. WordPress's own File block
+	 * does exactly that: the file name is a link, and the Download button beside it is
+	 * a second link to the same file. Two icons a centimetre apart, both going to the
+	 * same page, is a bug a reader notices and a screen reader user has to listen to.
+	 *
+	 * One block is also the right scope for that rule. Two paragraphs that each link
+	 * the annual report are two separate offers of it, and each should carry the icon —
+	 * and because every paragraph is its own block, they still do.
+	 *
+	 * @param array $block The parsed block. Unused: the work is the same for all of them.
 	 */
-	private function documents_for_post( int $post_id ): array {
-		if ( isset( $this->cache[ $post_id ] ) ) {
-			return $this->cache[ $post_id ];
+	public function add_icons_to_block( string $html, array $block ): string {
+		unset( $block );
+
+		return $this->add_icons( $html, true );
+	}
+
+	/**
+	 * The accessible versions for the PDFs linked in one piece of HTML.
+	 *
+	 * @return array<string, array{url: string, title: string}> Keyed by normalized PDF path.
+	 */
+	private function documents_in( string $content ): array {
+		$paths = $this->pdf_paths_in( $content );
+
+		if ( ! $paths ) {
+			return array();
 		}
 
-		$map = array();
+		$blog_id = get_current_blog_id();
 
-		if ( Equalify_Iris_Database::tables_exist() ) {
-			$rows = Equalify_Iris_Documents::published_for_post( get_current_blog_id(), $post_id );
+		$this->warm_from_post( $blog_id );
+		$this->look_up( $blog_id, $paths );
 
-			foreach ( $rows as $row ) {
-				$doc_post = get_post( (int) $row->doc_post_id );
+		$found = array();
 
-				// The page may have been deleted or unpublished since we recorded it.
-				// Checking is one cached lookup and saves us publishing a link to a
-				// 404, which is worse than no link at all.
-				if ( ! $doc_post || 'publish' !== $doc_post->post_status ) {
-					continue;
-				}
-
-				$entry = array(
-					'url'   => (string) get_permalink( $doc_post ),
-					'title' => (string) $doc_post->post_title,
-				);
-
-				// Keyed on the URL as it appears in the content, so matching a link
-				// is a plain array lookup rather than a search.
-				$map[ $this->normalize_url( (string) $row->pdf_url ) ] = $entry;
+		foreach ( $paths as $path ) {
+			if ( ! empty( $this->known[ $blog_id ][ $path ] ) ) {
+				$found[ $path ] = $this->known[ $blog_id ][ $path ];
 			}
 		}
 
-		$this->cache[ $post_id ] = $map;
+		return $found;
+	}
 
-		return $map;
+	/**
+	 * The normalized path of every PDF linked in one piece of HTML.
+	 *
+	 * @return array<string>
+	 */
+	private function pdf_paths_in( string $content ): array {
+		if ( ! preg_match_all( '#\bhref=(["\'])([^"\']*\.pdf[^"\']*)\1#i', $content, $matches ) ) {
+			return array();
+		}
+
+		$paths = array();
+
+		foreach ( $matches[2] as $href ) {
+			$paths[] = $this->normalize_url( $href );
+		}
+
+		return array_values( array_unique( array_filter( $paths ) ) );
+	}
+
+	/**
+	 * Read everything the sightings table knows about the post being rendered.
+	 *
+	 * This is the cheap query — one indexed join for every PDF on the post, however
+	 * many there are. Doing it up front means the usual case, a PDF linked from the
+	 * post's own content, is answered before anything has to ask by URL.
+	 */
+	private function warm_from_post( int $blog_id ): void {
+		$post_id = (int) get_the_ID();
+
+		if ( ! $post_id || isset( $this->warmed[ $blog_id ][ $post_id ] ) ) {
+			return;
+		}
+
+		$this->warmed[ $blog_id ][ $post_id ] = true;
+
+		if ( ! Equalify_Iris_Database::tables_exist() ) {
+			return;
+		}
+
+		foreach ( Equalify_Iris_Documents::with_page_for_post( $blog_id, $post_id ) as $row ) {
+			$this->remember( $blog_id, $row );
+		}
+	}
+
+	/**
+	 * Answer the paths the warm-up did not, and remember the misses.
+	 */
+	private function look_up( int $blog_id, array $paths ): void {
+		$unknown = array();
+
+		foreach ( $paths as $path ) {
+			if ( ! isset( $this->known[ $blog_id ][ $path ] ) ) {
+				$unknown[] = $path;
+			}
+		}
+
+		if ( ! $unknown || ! Equalify_Iris_Database::tables_exist() ) {
+			return;
+		}
+
+		foreach ( Equalify_Iris_Documents::with_page_by_paths( $blog_id, $unknown ) as $row ) {
+			$this->remember( $blog_id, $row );
+		}
+
+		foreach ( $unknown as $path ) {
+			if ( ! isset( $this->known[ $blog_id ][ $path ] ) ) {
+				$this->known[ $blog_id ][ $path ] = false;
+			}
+		}
+	}
+
+	/**
+	 * File one row away under the path a link would be written with.
+	 */
+	private function remember( int $blog_id, object $row ): void {
+		$path = $this->normalize_url( (string) $row->pdf_url );
+
+		if ( '' === $path || isset( $this->known[ $blog_id ][ $path ] ) ) {
+			return;
+		}
+
+		$doc_post = get_post( (int) $row->doc_post_id );
+
+		// The page may have been deleted or unpublished since we recorded it.
+		// Checking is one cached lookup and saves us publishing a link to a 404,
+		// which is worse than no link at all.
+		if ( ! $doc_post || 'publish' !== $doc_post->post_status ) {
+			$this->known[ $blog_id ][ $path ] = false;
+
+			return;
+		}
+
+		$this->known[ $blog_id ][ $path ] = array(
+			'url'   => (string) get_permalink( $doc_post ),
+			'title' => html_entity_decode( wp_strip_all_tags( (string) $doc_post->post_title ), ENT_QUOTES, 'UTF-8' ),
+		);
 	}
 
 	/**
@@ -160,10 +343,12 @@ class Equalify_Iris_Frontend {
 	 * inserts text immediately after the matching `</a>`. It never rewrites anything
 	 * it did not match, so content it does not understand passes through untouched.
 	 */
-	private function rewrite_links( string $content, array $documents ): string {
+	private function rewrite_links( string $content, array $documents, bool $once_per_pdf = false ): string {
+		$done = array();
+
 		return (string) preg_replace_callback(
 			'#<a\s([^>]*)>(.*?)</a>#is',
-			function ( array $match ) use ( $documents ) {
+			function ( array $match ) use ( $documents, $once_per_pdf, &$done ) {
 				$attributes = $match[1];
 				$inner      = $match[2];
 				$whole      = $match[0];
@@ -184,6 +369,12 @@ class Equalify_Iris_Frontend {
 					return $whole;
 				}
 
+				if ( $once_per_pdf && isset( $done[ $key ] ) ) {
+					return $whole;
+				}
+
+				$done[ $key ] = true;
+
 				$document = $documents[ $key ];
 
 				// Tag the original link too. It changes nothing on the page, but it
@@ -195,10 +386,58 @@ class Equalify_Iris_Frontend {
 					. ' data-equalify-iris-title="' . esc_attr( $document['title'] ) . '"'
 					. '>' . $inner . '</a>';
 
-				return $tagged . ' ' . self::icon_link( $document['url'], $document['title'] );
+				return self::hint() . $tagged . ' ' . self::icon_link( $document['url'], $document['title'] );
 			},
 			$content
 		);
+	}
+
+	/**
+	 * The sentence a screen reader reads out just before the PDF link.
+	 *
+	 * WHY THIS IS HERE AT ALL
+	 *
+	 * Because by the time the icon is announced, someone may already have followed
+	 * the PDF. Reading through a page linearly, the PDF link comes first, and
+	 * "annual-report.pdf, link" is a perfectly good invitation to press Enter. The
+	 * accessible version needs to be known about a moment earlier than that.
+	 *
+	 * WHY A HIDDEN SENTENCE AND NOT A SECOND LINK OR A REORDER
+	 *
+	 * A second, visually hidden link would put two links to the same page in the
+	 * document, which is worse than the problem: anyone using a list of links now
+	 * has a duplicate to work out.
+	 *
+	 * Moving the icon in front of the PDF link and pushing it back visually with CSS
+	 * would leave the tab order and the visual order disagreeing, which is its own
+	 * accessibility failure, and it would need a wrapper around the original link —
+	 * the one thing this plugin promises never to touch.
+	 *
+	 * A hidden sentence is heard first, occupies no space, is not focusable, and does
+	 * not appear in a list of links. Nothing about the page changes for anyone else.
+	 *
+	 * WHY THERE IS NO SPACE AFTER IT
+	 *
+	 * The span is taken out of the flow by CSS, but a space between it and the link
+	 * would not be, and would show up as a stray gap in the middle of a sentence.
+	 * The full stop is what separates it when read aloud.
+	 */
+	public static function hint(): string {
+		/**
+		 * The screen-reader-only sentence before a PDF link. Return '' to remove it.
+		 *
+		 * @param string $text
+		 */
+		$text = (string) apply_filters(
+			'equalify_iris_icon_hint',
+			__( 'An accessible version of this PDF is linked next.', 'equalify-iris' )
+		);
+
+		if ( '' === trim( $text ) ) {
+			return '';
+		}
+
+		return '<span class="equalify-iris-icon-hint">' . esc_html( $text ) . '</span>';
 	}
 
 	/**
@@ -206,26 +445,42 @@ class Equalify_Iris_Frontend {
 	 *
 	 * WHY EACH PIECE IS THERE — this is the accessibility-critical part of the file.
 	 *
-	 *   aria-label on the link, naming the document
-	 *     Screen readers can list every link on a page out of context. "Open" on its
-	 *     own tells someone nothing; "Open annual-report in Equalify Iris" tells them
-	 *     which document and where it goes.
+	 *   a visually hidden <span> as the link's whole name
+	 *     "Accessible version of annual-report". Screen readers can list every link
+	 *     on a page out of context, so the name says what the link leads to and which
+	 *     document, in that order: someone skimming a list of links meets "Accessible
+	 *     version of…" at the front rather than the file name, which they have just
+	 *     heard on the PDF link beside it.
+	 *
+	 *     Real text rather than an aria-label, because text is what every tool
+	 *     understands: browser page translation translates it (it skips aria-label),
+	 *     reading modes and text-only browsers show it, and there is no second copy of
+	 *     the name to drift out of step with the first. It used to be both — an
+	 *     aria-label naming the document and a shorter hidden label — and the two
+	 *     said different things, so which one somebody heard depended on their
+	 *     software.
+	 *
+	 *     Only our own class, not WordPress's .screen-reader-text as well. Themes
+	 *     restyle that class, and some make it visible on :focus for skip links; our
+	 *     rules in icon.css are the only ones we can be sure of.
 	 *
 	 *   aria-hidden="true" and focusable="false" on the SVG
 	 *     The icon is decoration; the link already has a name. Without these, some
 	 *     screen readers announce the graphic as well, and in older browsers the SVG
 	 *     itself becomes a tab stop — an extra thing to tab past that does nothing.
 	 *
-	 *   the visually hidden <span>
-	 *     A belt-and-braces text label inside the link. If a stylesheet fails to
-	 *     load, or a tool ignores aria-label, or the SVG does not render, there is
-	 *     still real text in the link. A link whose only content is an image that
-	 *     failed is an unlabelled link.
+	 *   no title attribute and no hover tooltip
+	 *     A title is read out as well as the name by some screen readers, so the
+	 *     link would be announced twice, and it never appears for keyboard or touch
+	 *     users at all. A tooltip that shows on hover has to be dismissible without
+	 *     moving the pointer (WCAG 1.4.13), which needs JavaScript, and this plugin
+	 *     puts none on anybody's pages. The hint before the PDF link is what tells
+	 *     people what the icon is.
 	 *
 	 *   fill="currentColor"
 	 *     The icon takes the colour of the surrounding link text, so it inherits
-	 *     whatever contrast the theme has already got right, and it still shows up
-	 *     in forced-colours and high-contrast modes.
+	 *     whatever contrast the theme has already got right. See icon.css for what
+	 *     happens in forced-colours mode.
 	 *
 	 *   the SVG is inline rather than an <img>
 	 *     An <img> could not inherit the text colour, would be one more HTTP
@@ -233,35 +488,36 @@ class Equalify_Iris_Frontend {
 	 */
 	public static function icon_link( string $url, string $title ): string {
 		/**
-		 * The label a screen reader reads for the icon link.
+		 * The name a screen reader reads for the icon link.
+		 *
+		 * It is the link's only text, so it has to make sense on its own in a list of
+		 * every link on the page.
 		 *
 		 * @param string $label
 		 * @param string $title The document's title.
 		 */
-		$label = apply_filters(
+		$label = (string) apply_filters(
 			'equalify_iris_icon_label',
 			sprintf(
 				/* translators: %s: the document's title. */
-				__( 'Open %s in Equalify Iris', 'equalify-iris' ),
+				__( 'Accessible version of %s', 'equalify-iris' ),
 				$title
 			),
 			$title
 		);
 
-		/** The short text shown on hover and inside the link. */
-		$short_label = apply_filters(
-			'equalify_iris_icon_short_label',
-			__( 'Open in Equalify Iris', 'equalify-iris' )
-		);
+		// An empty name would leave an unlabelled link, which is worse than a plain one.
+		if ( '' === trim( $label ) ) {
+			/* translators: %s: the document's title. */
+			$label = sprintf( __( 'Accessible version of %s', 'equalify-iris' ), $title );
+		}
 
 		$html = '<a href="' . esc_url( $url ) . '"'
 			. ' class="equalify-iris-icon-link"'
-			. ' aria-label="' . esc_attr( $label ) . '"'
-			. ' data-tooltip="' . esc_attr( $short_label ) . '"'
 			. ' data-equalify-iris-url="' . esc_url( $url ) . '"'
 			. ' data-equalify-iris-title="' . esc_attr( $title ) . '">'
 			. self::mark_svg()
-			. '<span class="equalify-iris-icon-label screen-reader-text">' . esc_html( $short_label ) . '</span>'
+			. '<span class="equalify-iris-icon-label">' . esc_html( $label ) . '</span>'
 			. '</a>';
 
 		/**
@@ -319,6 +575,141 @@ class Equalify_Iris_Frontend {
 				array( 'equalify-iris-icon' ),
 				EQUALIFY_IRIS_VERSION
 			);
+		}
+	}
+
+	/**
+	 * Leave the theme's design out of the document page.
+	 *
+	 * WHY THIS IS NEEDED AT ALL
+	 *
+	 * templates/single-document.php prints its own whole HTML document and never calls
+	 * get_header(), so none of the theme's markup appears. But stylesheets are enqueued
+	 * on a hook, not by the template, so without this the theme's CSS still loads and
+	 * still applies — a background colour on <body>, a font stack, a global line height,
+	 * a max-width on <main>. The page would carry a design nothing on it was using.
+	 *
+	 * WHY IT IS DONE BY LOOKING AT THE URL RATHER THAN BY NAME
+	 *
+	 * There is no convention for what a theme calls its stylesheet handle. What every
+	 * theme's stylesheet does have in common is living under the theme directory, so
+	 * that is the test. It catches child themes, parent themes and any extra stylesheet
+	 * a theme enqueues, without needing to know any of their names.
+	 *
+	 * WHAT ELSE GOES, AND WHY THAT IS SAFE
+	 *
+	 * The core handles listed below exist to style theme output: theme.json's generated
+	 * custom properties, the block library, and the shim that styles classic markup.
+	 * The document's own text came from Iris and was cleaned against a strict allowlist
+	 * of plain HTML elements (see class-html-cleaner.php) — there is no block markup in
+	 * it for the block library to style. comment-reply goes because this page has no
+	 * comment form for it to act on.
+	 *
+	 * WHAT DELIBERATELY STAYS
+	 *
+	 * Everything from wp-includes that is not in that list, and every other plugin's
+	 * styles and scripts. This method exists to remove a competing DESIGN, not to
+	 * declare the page ours alone: a plugin adding a consent banner or an accessibility
+	 * widget to the site should still work here, and quietly breaking other people's
+	 * plugins on one page is how a plugin earns a reputation.
+	 *
+	 * Priority 100, so it runs after themes and plugins have had their turn to enqueue.
+	 */
+	public function strip_theme_design(): void {
+		if ( ! is_singular( Equalify_Iris_Post_Type::POST_TYPE ) ) {
+			return;
+		}
+
+		/**
+		 * Should the document page be its own design, ignoring the theme's?
+		 *
+		 * Return false to leave the theme's stylesheets in the queue — worth doing
+		 * alongside a `single-equalify_iris_doc.php` template that puts the site's
+		 * header and footer back.
+		 *
+		 * @param bool $standalone
+		 */
+		if ( ! apply_filters( 'equalify_iris_document_standalone', true ) ) {
+			return;
+		}
+
+		$theme_urls = array_unique(
+			array(
+				get_theme_root_uri(),
+				get_stylesheet_directory_uri(),
+				get_template_directory_uri(),
+			)
+		);
+
+		// Styles that exist only to style a theme's output.
+		$core_styles = array(
+			'global-styles',
+			'wp-block-library',
+			'wp-block-library-theme',
+			'classic-theme-styles',
+
+			// Core's own skip link, for block themes. Its target is an element block
+			// templates emit and this page does not, so leaving it would mean a second
+			// skip link that goes nowhere — worse than no skip link, because a keyboard
+			// user reaches it first and it silently does nothing.
+			'wp-block-template-skip-link',
+		);
+
+		foreach ( $core_styles as $handle ) {
+			wp_dequeue_style( $handle );
+		}
+
+		wp_dequeue_script( 'comment-reply' );
+
+		/*
+		 * The theme's web fonts.
+		 *
+		 * These are not in the style queue: core prints theme.json's @font-face rules
+		 * straight into the head, so dequeuing cannot reach them. Nothing on this page
+		 * asks for them — document.css sets the page in fonts already on the reader's
+		 * machine, on purpose — so without this the page downloads a variable font it
+		 * never uses.
+		 *
+		 * remove_action() needs the priority core registered with. If a future release
+		 * changes it, the fonts come back and the page still works; it is a wasted
+		 * download, not a broken page.
+		 */
+		remove_action( 'wp_head', 'wp_print_font_faces', 50 );
+		remove_action( 'wp_head', 'wp_print_font_faces_from_style_variations', 50 );
+
+		$this->dequeue_from_theme( wp_styles(), $theme_urls, 'style' );
+		$this->dequeue_from_theme( wp_scripts(), $theme_urls, 'script' );
+	}
+
+	/**
+	 * Drop everything in one queue whose file lives inside the theme.
+	 *
+	 * The queue is copied before looping, because dequeuing rewrites the very array
+	 * being walked.
+	 *
+	 * @param WP_Dependencies      $registry   wp_styles() or wp_scripts().
+	 * @param array<string>        $theme_urls Directories that count as "the theme".
+	 * @param string               $kind       'style' or 'script'.
+	 */
+	private function dequeue_from_theme( $registry, array $theme_urls, string $kind ): void {
+		foreach ( (array) $registry->queue as $handle ) {
+			$src = isset( $registry->registered[ $handle ] ) ? (string) $registry->registered[ $handle ]->src : '';
+
+			if ( '' === $src ) {
+				continue;
+			}
+
+			foreach ( $theme_urls as $theme_url ) {
+				if ( '' !== $theme_url && 0 === strpos( $src, $theme_url ) ) {
+					if ( 'style' === $kind ) {
+						wp_dequeue_style( $handle );
+					} else {
+						wp_dequeue_script( $handle );
+					}
+
+					break;
+				}
+			}
 		}
 	}
 }

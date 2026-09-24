@@ -79,23 +79,36 @@
 	outline-offset: 2px;
 }
 
-/* A gentle hover, using the current text colour so it works on any background. */
+/*
+ * A gentle hover.
+ *
+ * Mid grey rather than black, because the icon now appears in footers and sidebars as
+ * well as in body text, and a black wash is invisible on a dark background. A grey at
+ * a quarter opacity reads as a slight lift on either.
+ */
 .equalify-iris-icon-link:hover {
-	background-color: rgba(0, 0, 0, 0.06);
+	background-color: rgba(128, 128, 128, 0.25);
 }
 
 /*
- * The visually hidden label.
+ * The two pieces of text that are read but not seen: the label inside the icon link,
+ * which is the link's entire name, and the sentence that goes in front of the PDF link to say the accessible version
+ * is coming.
  *
  * The same rules WordPress uses for .screen-reader-text. They are repeated here
  * because we cannot assume the theme defines that class — and if it does not, and we
- * do not, the label becomes visible text next to every icon.
+ * do not, both become visible text in the middle of somebody's sentence.
  *
  * Note what this does NOT use: display:none and visibility:hidden both remove the
  * text from screen readers as well as from the screen, which would defeat the entire
  * purpose. Clipping it to a 1px box is how you hide something visually while leaving
  * it readable by assistive technology.
+ *
+ * position: absolute is doing a second job for the hint: it takes the span out of the
+ * flow entirely, so a hint in the middle of a paragraph cannot push the words around
+ * it even by a pixel.
  */
+.equalify-iris-icon-hint,
 .equalify-iris-icon-label {
 	position: absolute;
 	width: 1px;
@@ -112,13 +125,20 @@
 /*
  * Windows High Contrast Mode and other forced-colours modes.
  *
- * These modes replace the page's colours entirely, and SVG fills are one of the
- * things that get lost. forced-color-adjust: auto asks the browser to remap our
- * fill to a system colour rather than leaving an invisible icon.
+ * These modes replace the page's colours, but not an SVG's fill attributes. The
+ * mark's dark parts are fill="currentColor", so they become the forced link colour
+ * on their own. Its light parts are a literal fill="white", which the browser leaves
+ * alone — on a white high-contrast theme they vanish, and on a dark one they glare.
+ * Mapping them to Canvas, the forced background colour, keeps the mark's shape in
+ * every theme: link colour on background, as it is designed to be.
  */
 @media (forced-colors: active) {
 	.equalify-iris-icon-link svg {
 		forced-color-adjust: auto;
+	}
+
+	.equalify-iris-icon-link svg path[fill="white"] {
+		fill: Canvas;
 	}
 
 	.equalify-iris-icon-link:focus,

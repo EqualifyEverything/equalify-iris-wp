@@ -695,6 +695,10 @@ class Equalify_Iris_Worker {
 	 * The row and the post are kept rather than deleted, so republishing the page
 	 * brings the accessible version straight back at the same URL with no
 	 * re-conversion.
+	 *
+	 * Most retiring now happens the moment a post stops being public — see
+	 * Documents::retire_if_unlinked() — so this is the backstop, for whatever
+	 * reaches the orphaned state some other way.
 	 */
 	private function retire_orphans(): int {
 		$retired = 0;
@@ -704,24 +708,7 @@ class Equalify_Iris_Worker {
 				break;
 			}
 
-			if ( $document->doc_post_id ) {
-				switch_to_blog( (int) $document->site_id );
-
-				wp_update_post(
-					array(
-						'ID'          => (int) $document->doc_post_id,
-						'post_status' => 'draft',
-					)
-				);
-
-				restore_current_blog();
-			}
-
-			Equalify_Iris_Documents::set_status(
-				(int) $document->id,
-				Equalify_Iris_Documents::RETIRED,
-				__( 'This PDF is no longer linked from any published page, so its accessible version has been unpublished.', 'equalify-iris' )
-			);
+			Equalify_Iris_Documents::retire( $document );
 
 			++$retired;
 		}

@@ -83,10 +83,9 @@ if ( is_admin() || ( defined( 'WP_CLI' ) && WP_CLI ) ) {
 	require_once EQUALIFY_IRIS_PATH . 'admin/class-admin-log.php';
 }
 
-// Create the database tables when the plugin is switched on, and again for any
-// site added to the network later. See class-database.php for why both are
-// needed.
-register_activation_hook( EQUALIFY_IRIS_FILE, array( 'Equalify_Iris_Database', 'on_activate' ) );
+// Create the database tables when the plugin is switched on, and catch up on
+// anything that changed while it was off. See Equalify_Iris_Plugin::on_activate().
+register_activation_hook( EQUALIFY_IRIS_FILE, array( 'Equalify_Iris_Plugin', 'on_activate' ) );
 register_deactivation_hook( EQUALIFY_IRIS_FILE, array( 'Equalify_Iris_Plugin', 'on_deactivate' ) );
 
 // `plugins_loaded` is the earliest hook where every plugin is available, which

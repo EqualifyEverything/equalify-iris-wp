@@ -166,9 +166,21 @@ class Equalify_Iris_Database {
 	 * Used by the dashboard's health check and by `wp equalify-iris doctor`, so
 	 * "the tables were never created" shows up as a clear message instead of as
 	 * a database error in a log nobody reads.
+	 *
+	 * It is also asked on the front end, several times over on a page with PDFs on it,
+	 * which is why a yes is remembered for the rest of the request. Only a yes: tables
+	 * can be created part-way through a request — pressing Start does exactly that —
+	 * and a remembered no would then be wrong for everything after it. Tables do not
+	 * disappear part-way through a request, so a remembered yes cannot go stale.
 	 */
 	public static function tables_exist(): bool {
 		global $wpdb;
+
+		static $exists = false;
+
+		if ( $exists ) {
+			return true;
+		}
 
 		foreach ( array( self::documents_table(), self::sightings_table() ) as $table ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
@@ -179,7 +191,34 @@ class Equalify_Iris_Database {
 			}
 		}
 
+		$exists = true;
+
 		return true;
+	}
+
+	/**
+	 * Empty both tables, keeping them in place.
+	 *
+	 * For `wp equalify-iris purge`, where the point is to leave no record of what
+	 * was converted while keeping a working plugin behind. drop() would leave the
+	 * plugin unable to do anything until the tables were recreated.
+	 *
+	 * Sightings go first: they reference documents, and a sightings row whose
+	 * document has gone is a row that will never be read again.
+	 *
+	 * @return int How many document rows were cleared.
+	 */
+	public static function empty_tables(): int {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$documents = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . self::documents_table() );
+
+		$wpdb->query( 'DELETE FROM ' . self::sightings_table() );
+		$wpdb->query( 'DELETE FROM ' . self::documents_table() );
+		// phpcs:enable
+
+		return $documents;
 	}
 
 	/**

@@ -55,6 +55,10 @@ class Equalify_Iris_HTML_Cleaner {
 		// <img> tag rather than whatever kses leaves of it.
 		$html = self::remove_unresolvable_images( $html );
 
+		// Then the page's own furniture, for the same reason: before kses, while the
+		// tags are still whole.
+		$html = self::remove_page_furniture( $html );
+
 		$html = wp_kses( $html, self::allowed_html() );
 
 		return array(
@@ -81,6 +85,43 @@ class Equalify_Iris_HTML_Cleaner {
 	 */
 	private static function remove_unresolvable_images( string $html ): string {
 		return (string) preg_replace( '#<img\b[^>]*>#i', '', $html );
+	}
+
+	/**
+	 * Remove the wrapper of the page Iris thought it was making.
+	 *
+	 * WHY THIS IS NEEDED
+	 *
+	 * What Iris converts a PDF into is a whole HTML document, so its output opens with a
+	 * <title> and a <main>. We are storing that output as the body of a WordPress post,
+	 * inside a page that has a <title> and a <main> of its own, and two of each is a
+	 * problem in both cases:
+	 *
+	 *   <main>  — two main landmarks. "Jump to main" stops being one destination and
+	 *             becomes a choice between two, one of which is the whole document and
+	 *             one of which is also the whole document.
+	 *   <title> — the document's title comes from the first <title> in the tree, so a
+	 *             stray one in the body can decide what the browser tab, the bookmark
+	 *             and the shared link all say. What it says is the source filename.
+	 *
+	 * WHY <main> IS UNWRAPPED BUT <title> IS DELETED WITH ITS CONTENTS
+	 *
+	 * Because <main> holds the document and <title> holds a filename we already know.
+	 * Removing the tags and keeping the text is right for the first and wrong for the
+	 * second — a deleted <title> tag with its text left behind is a stray line of
+	 * "annual-report-1" above the document, which is how this was noticed.
+	 *
+	 * WHY NOT DOMDocument
+	 *
+	 * It would be more precise, and it also rewrites the whole document on the way out:
+	 * it moves stray content into a <body> it invents, changes how entities are written,
+	 * and needs libxml built in. Two named tags at the outside of the document do not
+	 * justify that. kses runs immediately afterwards and is the actual safety boundary.
+	 */
+	private static function remove_page_furniture( string $html ): string {
+		$html = (string) preg_replace( '#<title\b[^>]*>.*?</title\s*>#is', '', $html );
+
+		return (string) preg_replace( '#</?main\b[^>]*>#i', '', $html );
 	}
 
 	/**
@@ -249,7 +290,6 @@ class Equalify_Iris_HTML_Cleaner {
 			'nav'        => array(),
 			'header'     => array(),
 			'footer'     => array(),
-			'main'       => array(),
 			'hr'         => array(),
 			'br'         => array(),
 			'a'          => array(
@@ -279,6 +319,11 @@ class Equalify_Iris_HTML_Cleaner {
 		// object, embed, link, meta, base, and every on* event attribute. They are
 		// absent from the list, which is all it takes — but they are named here so
 		// their absence reads as a decision rather than an oversight.
+		//
+		// <main> and <title> are in here for a different reason — not danger, but
+		// duplication. See remove_page_furniture() above, which is what actually deals
+		// with them; they are listed here as well so that a form of either tag the
+		// regex there does not recognise still cannot reach the stored HTML.
 		unset(
 			$allowed['script'],
 			$allowed['style'],
@@ -288,6 +333,8 @@ class Equalify_Iris_HTML_Cleaner {
 			$allowed['link'],
 			$allowed['meta'],
 			$allowed['base'],
+			$allowed['main'],
+			$allowed['title'],
 			$allowed['form']['action'],
 			$allowed['form']['method']
 		);

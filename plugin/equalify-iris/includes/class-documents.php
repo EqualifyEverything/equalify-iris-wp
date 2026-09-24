@@ -40,6 +40,24 @@
  *   too_big    Over the file size limit.
  *   failed     Something went wrong. Worth retrying.
  *   skipped    Deliberately excluded by a setting.
+ *   excluded   A super admin asked for this one PDF not to be converted.
+ *
+ * WHY `excluded` IS NOT JUST `skipped`
+ *
+ * They mean different things to whoever is reading the dashboard. `skipped` is
+ * "a setting excluded this" — change the setting and it converts. `excluded` is
+ * "a human decided about this specific PDF", which is usually a takedown or a
+ * records request, and is the one status where quietly reversing the decision
+ * would be a real failure. Filtering the Documents screen to one and getting the
+ * other is exactly the kind of muddle that makes an admin stop trusting the list.
+ *
+ * NOTE THAT DELETING A PAGE IS NOT A STATUS
+ *
+ * Deleting a document's public page says nothing about whether it should be
+ * converted. It is an ordinary thing to do — the page was wrong, or stale, or you
+ * want it rebuilt — so a deleted document goes back to `pending` and is converted
+ * again like anything else. Not converting it again is a separate decision, and
+ * `excluded` is how you record that one.
  *
  * WHY too_long AND too_big ARE NOT JUST "failed"
  *
@@ -68,6 +86,7 @@ class Equalify_Iris_Documents {
 	const TOO_BIG    = 'too_big';
 	const FAILED     = 'failed';
 	const SKIPPED    = 'skipped';
+	const EXCLUDED   = 'excluded';
 
 	/**
 	 * How many times we try a document before leaving it alone.
@@ -113,6 +132,7 @@ class Equalify_Iris_Documents {
 			self::TOO_BIG    => __( 'File too large', 'equalify-iris' ),
 			self::FAILED     => __( 'Failed', 'equalify-iris' ),
 			self::SKIPPED    => __( 'Skipped', 'equalify-iris' ),
+			self::EXCLUDED   => __( 'Excluded — will not be converted', 'equalify-iris' ),
 		);
 	}
 
@@ -612,6 +632,180 @@ class Equalify_Iris_Documents {
 	}
 
 	// -----------------------------------------------------------------------
+	// Deleting a page, and excluding a PDF
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Delete a document's public page.
+	 *
+	 * WHY THIS EXISTS
+	 *
+	 * Retiring is not deletion. A retired document's HTML is still in the database
+	 * as a draft, holding the full text, ready to be republished the moment the PDF
+	 * is linked again. That is the right behaviour for a page that came down because
+	 * an editor unpublished a post, and it is the wrong answer to "delete this".
+	 *
+	 * WHAT THIS DOES NOT DO
+	 *
+	 * It does not decide anything about whether the PDF should be converted. The
+	 * document goes back to `pending` and will be converted again on a later tick,
+	 * at the same URL, exactly like any other queued PDF. Deleting a page is an
+	 * ordinary thing to do — it was wrong, or stale, or you want it rebuilt — and
+	 * treating it as a permanent verdict would make the obvious action surprising.
+	 *
+	 * If the page should stay gone, that is a separate decision: see exclude().
+	 *
+	 * The sightings are left alone, because they record where the PDF appears and
+	 * that is still true. The PDF itself is untouched: we never owned it.
+	 */
+	public static function delete_page( int $id ): bool {
+		$document = self::find( $id );
+
+		if ( ! $document ) {
+			return false;
+		}
+
+		self::delete_post_for( $document );
+
+		return self::update(
+			$id,
+			array(
+				// Back in the queue, with a fresh set of attempts, the same as retry().
+				'status'   => self::PENDING,
+				'attempts' => 0,
+				'checks'   => 0,
+
+				// Cleared because the post it pointed at no longer exists. The icon
+				// lookup in with_page_for_post() requires doc_post_id > 0, and the
+				// front end also checks the post itself is still published, so these
+				// are two independent reasons the icon stops the moment the page goes.
+				'doc_post_id'     => null,
+				'iris_session_id' => '',
+				'last_error'      => '',
+				'next_action_at'  => current_time( 'mysql', true ),
+			)
+		);
+	}
+
+	/**
+	 * Do not convert this PDF, and delete its page if it has one.
+	 *
+	 * WHY IT HAS TO BE DURABLE
+	 *
+	 * This is the part that makes the difference between a working tool and a
+	 * useless one. The sweep runs constantly and keeps re-finding the same PDFs, so
+	 * a document that was merely deleted comes back — converted again within the
+	 * hour, at the same URL, with nobody told. For a takedown or a records request
+	 * that is not a bug, it is a breach. So the row stays, marked `excluded`, as a
+	 * standing note that says leave this one alone.
+	 *
+	 * Nothing picks an `excluded` row up again: add() only revives `retired` rows,
+	 * orphaned() only retires `published`, `pending` and `failed`, and every queue
+	 * query claims one specific status. It is inert until a human changes their mind,
+	 * which include() does — an exclusion made by mistake has to be reversible.
+	 */
+	public static function exclude( int $id, string $reason = '' ): bool {
+		$document = self::find( $id );
+
+		if ( ! $document ) {
+			return false;
+		}
+
+		// A page left up while the document says "will not be converted" is simply
+		// incoherent, so excluding takes the page down too.
+		self::delete_post_for( $document );
+
+		return self::update(
+			$id,
+			array(
+				'status'          => self::EXCLUDED,
+				'doc_post_id'     => null,
+				'iris_session_id' => '',
+				'last_error'      => '' !== $reason
+					? $reason
+					: __( 'A super admin asked for this PDF not to be converted.', 'equalify-iris' ),
+				'next_action_at'  => current_time( 'mysql', true ),
+			)
+		);
+	}
+
+	/**
+	 * Undo an exclusion: convert this PDF after all.
+	 *
+	 * Deliberately refuses to touch anything that is not excluded, so it cannot be
+	 * used to drag a `too_long` document back into a queue it will only fall out of.
+	 */
+	public static function include_again( int $id ): bool {
+		$document = self::find( $id );
+
+		if ( ! $document || self::EXCLUDED !== $document->status ) {
+			return false;
+		}
+
+		self::retry( $id );
+
+		return true;
+	}
+
+	/**
+	 * Delete the WordPress post holding a document's HTML, on whichever site it is on.
+	 */
+	private static function delete_post_for( object $document ): void {
+		if ( empty( $document->doc_post_id ) ) {
+			return;
+		}
+
+		switch_to_blog( (int) $document->site_id );
+
+		// `true` means skip the trash. A trashed post is still a row containing the
+		// entire text of the document, which is not what anyone asking for it to be
+		// deleted had in mind — and it would sit there until someone emptied the
+		// trash by hand on that particular site.
+		wp_delete_post( (int) $document->doc_post_id, true );
+
+		restore_current_blog();
+	}
+
+	/**
+	 * Delete every converted page on the network, leaving the queue rows behind.
+	 *
+	 * For clearing up before deleting the plugin. This does NOT mark anything
+	 * `excluded`, so if the plugin is left running the sweep will convert everything
+	 * again — which is fine when the next step is uninstalling, and wrong for
+	 * anything else. Use exclude() to keep a document from coming back.
+	 *
+	 * @return int How many pages were deleted.
+	 */
+	public static function purge_pages(): int {
+		global $wpdb;
+
+		$table   = Equalify_Iris_Database::documents_table();
+		$deleted = 0;
+
+		// In batches. A network with forty thousand documents must not be pulled
+		// into memory in one query just to be deleted.
+		while ( true ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$rows = $wpdb->get_results( "SELECT id, site_id, doc_post_id FROM {$table} WHERE doc_post_id > 0 LIMIT 200" );
+
+			if ( ! $rows ) {
+				return $deleted;
+			}
+
+			foreach ( $rows as $row ) {
+				self::delete_post_for( $row );
+
+				// Clearing the pointer is also what makes the loop terminate: the
+				// query above only selects rows that still have one, so each batch
+				// is guaranteed to be different from the last even if a delete fails.
+				self::update( (int) $row->id, array( 'doc_post_id' => null ) );
+
+				++$deleted;
+			}
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// Sightings — where each PDF appears
 	// -----------------------------------------------------------------------
 
@@ -648,23 +842,167 @@ class Equalify_Iris_Documents {
 	 * Called when a post is unpublished, trashed, deleted, or edited — in the
 	 * edit case, discovery immediately re-adds the PDFs that are still there, so
 	 * removing a link from a post correctly drops its sighting.
+	 *
+	 * @return array<int> The documents that were sighted there, so the caller can
+	 *                    retire any that are now linked from nowhere.
 	 */
-	public static function clear_sightings_for_post( int $site_id, int $post_id ): void {
+	public static function clear_sightings_for_post( int $site_id, int $post_id ): array {
 		global $wpdb;
+
+		$table = Equalify_Iris_Database::sightings_table();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$document_ids = $wpdb->get_col(
+			$wpdb->prepare( "SELECT document_id FROM {$table} WHERE site_id = %d AND post_id = %d", $site_id, $post_id )
+		);
+
+		if ( ! $document_ids ) {
+			return array();
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$wpdb->delete(
-			Equalify_Iris_Database::sightings_table(),
+			$table,
 			array(
 				'site_id' => $site_id,
 				'post_id' => $post_id,
 			),
 			array( '%d', '%d' )
 		);
+
+		return array_map( 'intval', $document_ids );
 	}
 
 	/**
-	 * The published documents for the PDFs on one post.
+	 * Forget the sightings on every post of one site that is no longer public.
+	 *
+	 * WHY THIS IS NEEDED
+	 *
+	 * Sightings are kept accurate by watching posts change: Discovery hears a post
+	 * being unpublished, trashed or deleted and drops what it linked to. While the
+	 * plugin is deactivated nothing is listening, so a post unpublished in that time
+	 * keeps its sightings — and a PDF linked only from that post keeps a public
+	 * accessible version for good, because nothing will ever tell us otherwise. The
+	 * sweep cannot fix it either: it only visits published posts.
+	 *
+	 * So on activation, every sighting whose post is gone, not published, or now
+	 * behind a password is dropped here. It is one query per site against that
+	 * site's own posts table, with no posts loaded into PHP.
+	 *
+	 * @return array<int> The documents that lost a sighting.
+	 */
+	public static function prune_sightings_for_site( int $site_id ): array {
+		global $wpdb;
+
+		$table = Equalify_Iris_Database::sightings_table();
+		$posts = $wpdb->get_blog_prefix( $site_id ) . 'posts';
+
+		// The same test Discovery::scan_post() applies to a post before it will look
+		// at it: published, and no password.
+		$stale = "FROM {$table} s
+			LEFT JOIN {$posts} p ON p.ID = s.post_id AND p.post_status = 'publish' AND p.post_password = ''
+			WHERE s.site_id = %d AND p.ID IS NULL";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$document_ids = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT s.document_id {$stale}", $site_id ) );
+
+		if ( ! $document_ids ) {
+			return array();
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( $wpdb->prepare( "DELETE s {$stale}", $site_id ) );
+
+		return array_map( 'intval', $document_ids );
+	}
+
+	// -----------------------------------------------------------------------
+	// Retiring — taking a page down when its PDF stops being public
+	// -----------------------------------------------------------------------
+
+	/**
+	 * The statuses a document can be retired from.
+	 *
+	 * The same three orphaned() looks for. The rest either never produced a page
+	 * (too_long, too_big, skipped), are already somewhere deliberate (retired,
+	 * excluded), or are part-way through a conversion that retiring would abandon
+	 * with Iris holding the file.
+	 *
+	 * @return array<string>
+	 */
+	public static function retirable_statuses(): array {
+		return array( self::PUBLISHED, self::PENDING, self::FAILED );
+	}
+
+	/**
+	 * Take one document's page down and mark it retired.
+	 *
+	 * Draft, not delete: the text stays, so a page republished tomorrow brings the
+	 * accessible version back at the same URL without converting it again. See
+	 * revive(). A draft is not public, so the page 404s and the icon goes with it —
+	 * the front end checks the page's own status before it links to anything.
+	 */
+	public static function retire( object $document ): void {
+		if ( ! empty( $document->doc_post_id ) ) {
+			switch_to_blog( (int) $document->site_id );
+
+			wp_update_post(
+				array(
+					'ID'          => (int) $document->doc_post_id,
+					'post_status' => 'draft',
+				)
+			);
+
+			restore_current_blog();
+		}
+
+		self::set_status(
+			(int) $document->id,
+			self::RETIRED,
+			__( 'This PDF is no longer linked from any published page, so its accessible version has been unpublished.', 'equalify-iris' )
+		);
+	}
+
+	/**
+	 * Retire whichever of these documents are now linked from nowhere.
+	 *
+	 * WHY THIS HAPPENS STRAIGHT AWAY, NOT ON THE NEXT TICK
+	 *
+	 * Because the tick does not always run. It does nothing while processing is
+	 * stopped, and nothing at all on a network whose cron is broken — and in either
+	 * case the full text of a PDF whose only page had just been unpublished stayed
+	 * readable at a public URL for as long as that lasted, with the plugin saying
+	 * nothing. Retiring is local work, a status change and a post update, so there is
+	 * no reason to leave it for later. The tick still retires orphans too; it is the
+	 * backstop for anything that reaches this state without passing through here.
+	 *
+	 * @param array<int> $document_ids
+	 * @return int How many were retired.
+	 */
+	public static function retire_if_unlinked( array $document_ids ): int {
+		$retired = 0;
+
+		foreach ( array_unique( array_map( 'intval', $document_ids ) ) as $document_id ) {
+			if ( self::sighting_count( $document_id ) > 0 ) {
+				continue;
+			}
+
+			$document = self::find( $document_id );
+
+			if ( ! $document || ! in_array( $document->status, self::retirable_statuses(), true ) ) {
+				continue;
+			}
+
+			self::retire( $document );
+
+			++$retired;
+		}
+
+		return $retired;
+	}
+
+	/**
+	 * The documents with a page, for the PDFs on one post.
 	 *
 	 * THIS IS THE QUERY THE FRONT END RUNS, so it is written to be cheap.
 	 *
@@ -679,9 +1017,24 @@ class Equalify_Iris_Documents {
 	 * the sightings table for retirement and getting this for free is the main
 	 * reason it exists.
 	 *
+	 * WHY IT ASKS FOR A PAGE AND NOT FOR THE `published` STATUS
+	 *
+	 * Because the status is where the queue is, and the page is what the icon links
+	 * to. They usually agree, and when they do not it is always the same way round: a
+	 * document whose PDF is being converted again — retried, timed out, replaced —
+	 * keeps its previous page, still published, at the same URL, for the whole time
+	 * it is back in the queue. Asking for the status hid the icon for that whole time
+	 * while the page it would have linked to stayed up and public anyway. That hid
+	 * nothing from anyone except the people the icon is for.
+	 *
+	 * So this returns every row that has a page, and the front end keeps the ones
+	 * whose page is published (see Frontend::remember()). Everything that should take
+	 * the icon away already takes the page away: retiring makes it a draft, and
+	 * deleting or excluding deletes it and clears doc_post_id.
+	 *
 	 * @return array Rows with pdf_url, attachment_id and doc_post_id.
 	 */
-	public static function published_for_post( int $site_id, int $post_id ): array {
+	public static function with_page_for_post( int $site_id, int $post_id ): array {
 		global $wpdb;
 
 		$documents = Equalify_Iris_Database::documents_table();
@@ -695,11 +1048,72 @@ class Equalify_Iris_Documents {
 				   INNER JOIN {$documents} d ON d.id = s.document_id
 				  WHERE s.site_id = %d
 				    AND s.post_id = %d
-				    AND d.status = %s
 				    AND d.doc_post_id > 0",
 				$site_id,
-				$post_id,
-				self::PUBLISHED
+				$post_id
+			)
+		);
+	}
+
+	/**
+	 * The documents with a page, for a set of PDF paths on one site.
+	 *
+	 * WHY THIS EXISTS ALONGSIDE with_page_for_post()
+	 *
+	 * Because a PDF is not always linked from a post's content. It can be in a
+	 * sidebar widget, in a block theme's footer template, in a shortcode another
+	 * plugin renders — places the sweeper never scans, so there is no sighting for
+	 * them and the query above returns nothing at all. The icon has to appear there
+	 * too, or "wherever a converted PDF is linked" is not true.
+	 *
+	 * So this one asks by URL instead of by post. It is the more expensive of the
+	 * two — a LIKE per distinct PDF rather than one indexed join — which is why the
+	 * front end only reaches for it about links the cheap query did not already
+	 * answer, and remembers the answers for the rest of the request.
+	 *
+	 * Matching is on the end of the URL because the link in the content and the URL
+	 * we stored need not be written the same way: one may have a scheme where the
+	 * other does not, one may say https where the other says http. The path is the
+	 * file, so the path is what we compare.
+	 *
+	 * Like with_page_for_post(), it asks whether there is a page rather than what the
+	 * status is, for the reason given there.
+	 *
+	 * @param array<string> $paths Normalized paths, as Frontend::normalize_url() makes them.
+	 * @return array Rows with pdf_url and doc_post_id.
+	 */
+	public static function with_page_by_paths( int $site_id, array $paths ): array {
+		global $wpdb;
+
+		// Bounded, because this builds one OR per path. Fifty PDF links in one chunk
+		// of HTML is already an unusual page; five hundred would be a query nobody
+		// wants on a page view.
+		$paths = array_slice( array_values( array_unique( array_filter( $paths ) ) ), 0, 50 );
+
+		if ( ! $paths ) {
+			return array();
+		}
+
+		$table  = Equalify_Iris_Database::documents_table();
+		$likes  = array();
+		$values = array( $site_id );
+
+		foreach ( $paths as $path ) {
+			$likes[]  = 'pdf_url LIKE %s';
+			$values[] = '%' . $wpdb->esc_like( $path );
+		}
+
+		$like_sql = implode( ' OR ', $likes );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return (array) $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT pdf_url, attachment_id, doc_post_id, page_count, file_bytes
+				   FROM {$table}
+				  WHERE site_id = %d
+				    AND doc_post_id > 0
+				    AND ( {$like_sql} )",
+				...$values
 			)
 		);
 	}
