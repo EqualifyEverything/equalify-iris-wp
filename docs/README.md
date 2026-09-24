@@ -130,17 +130,32 @@ On any published page that links to a converted PDF, an icon appears immediately
 
 ```html
 <a href="/wp-content/uploads/2026/01/report.pdf">the report</a>
-<a href="https://example.org/equalify-iris/1184/report/" class="equalify-iris-icon-link"
-   aria-label="Open report in Equalify Iris">…</a>
+<a href="https://example.org/equalify-iris/1184/report/" class="equalify-iris-icon-link">
+   <svg aria-hidden="true" focusable="false">…</svg>
+   <span class="equalify-iris-icon-label">Accessible version of report</span></a>
 ```
 
 The original link is never changed, moved, or replaced. The icon is a second, separate link.
-Anyone who wants the PDF still gets the PDF.
+Anyone who wants the PDF still gets the PDF. A screen reader hears "An accessible version of this
+PDF is linked next." just before the PDF link, and then "Accessible version of report" for the icon.
 
-Following the icon lands on the accessible version: a title, a plain-language note saying it is a
-machine-made copy, a link to the original with its page count and size, a link back to a page it
-appears on, a table of contents when there are enough headings to need one, and the document text.
-The plugin adds no JavaScript — nothing on the page needs scripting to work.
+The icon is there only while the accessible version is. Unpublish the page, give it a password,
+take the link out, or deactivate the plugin, and the icon goes with it — and the accessible
+version's address answers 404 rather than a copy nobody should be able to reach.
+
+Following the icon lands on the accessible version. It is a viewer, not a post: the theme's header,
+footer, stylesheets and web fonts are all left out, and what fills the page is the document.
+
+Above it sits a quiet bar holding the document's title and two panels, both closed on arrival:
+
+- **Contents** — the table of contents, when the document has enough headings to need one.
+- **About this accessible version of a PDF** — two sentences saying where the page came from and what
+  to do if it looks wrong, a link to the original with its page count and size, a link back to a page
+  it appears on, a link to the site, and the date it was converted.
+
+Everything the plugin has to say is therefore one labelled click away rather than in front of the
+text. The panels are `<details>` elements: the plugin adds no JavaScript, so they work with scripting
+off, and so does everything else on the page.
 
 The document text is the HTML Iris returned, inserted as it came. That means its heading levels are
 Iris's, not ours: a converted document commonly repeats its title as an `<h1>` on every page, so the

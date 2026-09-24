@@ -129,25 +129,99 @@ class Equalify_Iris_Plugin {
 	}
 
 	/**
+	 * Set up when the plugin is switched on, or back on.
+	 *
+	 * WHAT A REACTIVATION HAS TO CATCH UP ON
+	 *
+	 * While the plugin is off, nothing is watching posts. A page unpublished in that
+	 * time keeps its sightings, and a PDF linked only from it would keep a public
+	 * accessible version for good, because the thing that would have noticed was not
+	 * running. So every sighting on a post that is no longer public is dropped here,
+	 * and whatever that leaves linked from nowhere is retired before anyone can reach
+	 * it. See Documents::prune_sightings_for_site().
+	 *
+	 * An edit that took a link out, or put a new one in, cannot be spotted that
+	 * cheaply — it needs each post's content rendering again, which is the sweep's
+	 * job. So after a reactivation a finished sweep is reopened, exactly as it is for
+	 * a new site joining the network. It goes at the sweep's usual unhurried pace,
+	 * and only while processing is running.
+	 *
+	 * The tick is scheduled here as well as on admin_init. A network run from a real
+	 * cron job and reactivated from WP-CLI may not load an admin screen for days, and
+	 * until something did, nothing ran.
+	 */
+	public static function on_activate(): void {
+		Equalify_Iris_Database::on_activate();
+		Equalify_Iris_Scheduler::schedule();
+
+		$was_deactivated = (bool) get_site_option( 'equalify_iris_deactivated_at' );
+
+		delete_site_option( 'equalify_iris_deactivated_at' );
+
+		if ( ! $was_deactivated || ! is_multisite() || ! Equalify_Iris_Database::tables_exist() ) {
+			return;
+		}
+
+		$lost_a_sighting = array();
+
+		foreach ( get_sites( array( 'fields' => 'ids', 'number' => 0 ) ) as $site_id ) {
+			$lost_a_sighting = array_merge( $lost_a_sighting, Equalify_Iris_Documents::prune_sightings_for_site( (int) $site_id ) );
+		}
+
+		$retired = Equalify_Iris_Documents::retire_if_unlinked( $lost_a_sighting );
+
+		if ( $retired ) {
+			Equalify_Iris_Logger::log(
+				sprintf(
+					/* translators: %s: a number of documents. */
+					_n(
+						'While the plugin was off, %s PDF lost the last public page linking to it, so its accessible version has been unpublished.',
+						'While the plugin was off, %s PDFs lost the last public page linking to them, so their accessible versions have been unpublished.',
+						$retired,
+						'equalify-iris'
+					),
+					number_format_i18n( $retired )
+				)
+			);
+		}
+
+		if ( Equalify_Iris_Sweeper::is_complete() ) {
+			Equalify_Iris_Sweeper::reset();
+
+			Equalify_Iris_Logger::log(
+				__( 'The plugin was switched back on, so the search for PDFs has been restarted to catch anything that changed while it was off.', 'equalify-iris' )
+			);
+		}
+	}
+
+	/**
 	 * Tidy up when the plugin is switched off.
 	 *
-	 * DELIBERATELY DOES NOT DELETE ANYTHING.
+	 * DELIBERATELY DOES NOT DELETE ANY DOCUMENTS.
 	 *
 	 * Deactivating is not the same as uninstalling, and people deactivate plugins to
 	 * test something for five minutes. Wiping a queue that took three weeks to build
-	 * because someone was debugging a theme would be unforgivable. All this does is
-	 * stop the clock, which means the converted pages stay published and everything
-	 * resumes where it left off when the plugin comes back.
+	 * because someone was debugging a theme would be unforgivable. The converted
+	 * pages are left exactly as they are, and everything resumes where it left off
+	 * when the plugin comes back.
 	 *
 	 * Deleting data belongs in uninstall.php, where it happens only if someone
 	 * chooses Delete and confirms it.
+	 *
+	 * WHAT VISITORS SEE WHILE IT IS OFF
+	 *
+	 * No icons: they are added as each page renders, so they stop with the plugin.
+	 * And a plain 404 at every accessible document's address, because the post type
+	 * is no longer registered and our URL rule is taken out of every site below.
+	 * The one thing this cannot reach is a page cache holding a copy rendered while
+	 * the plugin was on; that copy keeps its icons until the cache expires or is
+	 * cleared, and the icons lead to that 404.
 	 */
 	public static function on_deactivate(): void {
 		Equalify_Iris_Scheduler::unschedule();
+		Equalify_Iris_Post_Type::remove_rewrite_rule_everywhere();
 
-		// Rewrite rules are cached with our rule in them. Clearing the flag and
-		// flushing means the URLs stop resolving cleanly rather than resolving to
-		// nothing with no explanation.
-		flush_rewrite_rules( false );
+		// So reactivation knows it has a gap to catch up on. See on_activate().
+		update_site_option( 'equalify_iris_deactivated_at', time() );
 	}
 }

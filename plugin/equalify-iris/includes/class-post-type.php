@@ -88,6 +88,94 @@ class Equalify_Iris_Post_Type {
 		// Converted documents are not something an editor should be able to edit,
 		// delete, or find. Belt and braces on top of `show_ui => false`.
 		add_filter( 'map_meta_cap', array( $this, 'block_editing' ), 10, 4 );
+
+		add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
+		add_action( 'before_delete_post', array( $this, 'on_delete' ) );
+	}
+
+	/**
+	 * A converted page went live or stopped being live.
+	 *
+	 * The icon on every page linking to this PDF has just appeared or just become a
+	 * link to a 404. The icons themselves are worked out as each page renders, so
+	 * they are right on the next uncached view — but a page cache may be holding a
+	 * copy rendered before the change. See refresh_linking_pages().
+	 */
+	public function on_status_change( string $new_status, string $old_status, WP_Post $post ): void {
+		if ( self::POST_TYPE !== $post->post_type ) {
+			return;
+		}
+
+		if ( ( 'publish' === $new_status ) !== ( 'publish' === $old_status ) ) {
+			self::refresh_linking_pages( $post );
+		}
+	}
+
+	/**
+	 * A converted page is being deleted outright, which skips the status change.
+	 */
+	public function on_delete( int $post_id ): void {
+		$post = get_post( $post_id );
+
+		if ( $post && self::POST_TYPE === $post->post_type && 'publish' === $post->post_status ) {
+			self::refresh_linking_pages( $post );
+		}
+	}
+
+	/**
+	 * Tell caches that the pages linking to this document have changed.
+	 *
+	 * WHY clean_post_cache()
+	 *
+	 * It is what WordPress itself calls when a post changes, and it is the hook the
+	 * common page-cache plugins already listen on to drop that post's cached copy.
+	 * Calling it for each linking page means those plugins purge the right pages
+	 * without us knowing which one is installed. A cache that does not listen — a CDN,
+	 * Varnish — can use the equalify_iris_linking_pages_changed action instead.
+	 */
+	private static function refresh_linking_pages( WP_Post $doc_post ): void {
+		if ( ! Equalify_Iris_Database::tables_exist() ) {
+			return;
+		}
+
+		$attachment_id = (int) get_post_meta( $doc_post->ID, self::META_ATTACHMENT, true );
+		$document      = $attachment_id ? Equalify_Iris_Documents::find_by_attachment( get_current_blog_id(), $attachment_id ) : null;
+
+		if ( ! $document ) {
+			return;
+		}
+
+		$by_site = array();
+
+		foreach ( Equalify_Iris_Documents::sightings_for( (int) $document->id ) as $sighting ) {
+			$by_site[ (int) $sighting->site_id ][] = (int) $sighting->post_id;
+		}
+
+		foreach ( $by_site as $site_id => $post_ids ) {
+			$switched = get_current_blog_id() !== $site_id;
+
+			if ( $switched ) {
+				switch_to_blog( $site_id );
+			}
+
+			foreach ( $post_ids as $post_id ) {
+				clean_post_cache( $post_id );
+			}
+
+			/**
+			 * The icons on these posts have changed: an accessible version they link to
+			 * has been published or unpublished. For purging a cache WordPress does not
+			 * know about. Runs on the linking posts' own site.
+			 *
+			 * @param int[]   $post_ids The posts linking to the document.
+			 * @param WP_Post $doc_post The accessible version's page.
+			 */
+			do_action( 'equalify_iris_linking_pages_changed', $post_ids, $doc_post );
+
+			if ( $switched ) {
+				restore_current_blog();
+			}
+		}
 	}
 
 	/**
@@ -156,10 +244,18 @@ class Equalify_Iris_Post_Type {
 	 */
 	public function add_rewrite_rule(): void {
 		add_rewrite_rule(
-			'^' . self::URL_BASE . '/([0-9]+)/([^/]+)/?$',
+			self::rewrite_pattern(),
 			'index.php?' . self::POST_TYPE . '=$matches[1]-$matches[2]',
 			'top'
 		);
+	}
+
+	/**
+	 * The pattern our URL rule matches. One definition, because deactivation has to
+	 * find this exact rule again to take it out — see Plugin::on_deactivate().
+	 */
+	public static function rewrite_pattern(): string {
+		return '^' . self::URL_BASE . '/([0-9]+)/([^/]+)/?$';
 	}
 
 	/**
@@ -357,7 +453,57 @@ class Equalify_Iris_Post_Type {
 	 * recorded token at all.
 	 */
 	public static function schedule_rewrite_flush(): void {
-		update_site_option( 'equalify_iris_rewrite_token', (string) time() );
+		// A UUID rather than the time, because deactivating and reactivating within
+		// the same second is a thing WP-CLI does happily, and a token equal to the
+		// last one is a flush that silently never happens.
+		update_site_option( 'equalify_iris_rewrite_token', wp_generate_uuid4() );
+	}
+
+	/**
+	 * Take our URL rule out of every site in the network.
+	 *
+	 * WHY flush_rewrite_rules() IS NOT ENOUGH
+	 *
+	 * It was what deactivation used to call, and it did nothing useful, twice over.
+	 * It runs in the same request that is deactivating the plugin — the plugin is
+	 * still loaded, our rule is still registered in memory, and the rules were
+	 * faithfully rebuilt with it in. And it only rebuilds the one site it runs on.
+	 *
+	 * The result was worse than a 404. With the plugin gone nothing registers the
+	 * `equalify_iris_doc` query variable, so WordPress matched the stale rule, dropped
+	 * the variable it did not recognise, was left with an empty query, and served the
+	 * site's front page — HTTP 200 — at every accessible document's address, on every
+	 * site. A soft 404 like that tells a search engine the page is still there and
+	 * tells a reader following a saved link nothing at all.
+	 *
+	 * So: take the rule out of memory first, so nothing later in this request can
+	 * write it back, then delete each site's stored rules. WordPress rebuilds them on
+	 * that site's next request, from whatever plugins are active by then. Deleting
+	 * rather than flushing also means no site pays for a rebuild it does not need.
+	 *
+	 * Each site's flush token goes too, so reactivating flushes every site again even
+	 * if a later request had already rebuilt its rules without us.
+	 */
+	public static function remove_rewrite_rule_everywhere(): void {
+		global $wp_rewrite;
+
+		if ( $wp_rewrite instanceof WP_Rewrite ) {
+			unset( $wp_rewrite->extra_rules_top[ self::rewrite_pattern() ] );
+		}
+
+		// get_sites() only exists on multisite. The plugin is no use on a single site,
+		// but WordPress will still activate it there, and a deactivation that fatals
+		// is a plugin nobody can switch off.
+		$site_ids = is_multisite() ? get_sites( array( 'fields' => 'ids', 'number' => 0 ) ) : array( get_current_blog_id() );
+
+		foreach ( $site_ids as $site_id ) {
+			switch_to_blog( (int) $site_id );
+
+			delete_option( 'rewrite_rules' );
+			delete_option( 'equalify_iris_rewrite_token' );
+
+			restore_current_blog();
+		}
 	}
 
 	/**

@@ -67,7 +67,7 @@ class Equalify_Iris_Scheduler {
 	}
 
 	public function init(): void {
-		add_filter( 'cron_schedules', array( $this, 'add_schedule' ) ); // phpcs:ignore WordPress.WP.CronInterval
+		add_filter( 'cron_schedules', array( __CLASS__, 'add_schedule' ) ); // phpcs:ignore WordPress.WP.CronInterval
 		add_action( self::HOOK, array( $this, 'run_tick' ) );
 	}
 
@@ -84,7 +84,7 @@ class Equalify_Iris_Scheduler {
 	 * spending a PHP process to discover that. Five minutes keeps us close to the
 	 * pace Iris can actually work at.
 	 */
-	public function add_schedule( array $schedules ): array {
+	public static function add_schedule( array $schedules ): array {
 		$schedules[ self::SCHEDULE ] = array(
 			'interval' => self::INTERVAL,
 			'display'  => __( 'Every five minutes (Equalify Iris)', 'equalify-iris' ),
@@ -104,6 +104,12 @@ class Equalify_Iris_Scheduler {
 		if ( wp_next_scheduled( self::HOOK ) ) {
 			return;
 		}
+
+		// On the activation request the plugin's hooks have not been added yet, and
+		// wp_schedule_event() quietly refuses an interval WordPress has not been told
+		// about — which is how reactivating used to leave nothing scheduled until
+		// someone happened to open an admin screen. Adding it twice is harmless.
+		add_filter( 'cron_schedules', array( __CLASS__, 'add_schedule' ) ); // phpcs:ignore WordPress.WP.CronInterval
 
 		wp_schedule_event( time() + 60, self::SCHEDULE, self::HOOK );
 	}

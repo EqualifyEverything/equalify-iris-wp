@@ -11,6 +11,13 @@
 name: equalify-iris-test
 type: wordpress
 
+# Leave wp-config.php alone once it exists. Without this DDEV regenerates it from its
+# own single-site template on `ddev start`, which deletes the MULTISITE constants and
+# leaves a network whose database is multisite and whose config is not — WP-CLI then
+# answers "This is not a multisite installation." setup.sh still creates the file
+# when it is missing, and wp-config-ddev.php (the database settings) is untouched.
+disable_settings_management: true
+
 # WordPress lives in wp/ rather than at the top of this folder, so the scripts and
 # the DDEV config are not sitting inside the thing they install.
 docroot: wp

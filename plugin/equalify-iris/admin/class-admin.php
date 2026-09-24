@@ -54,6 +54,15 @@ class Equalify_Iris_Admin {
 
 	private Equalify_Iris_Plugin $plugin;
 
+	/**
+	 * How many documents the action just finished with actually changed.
+	 *
+	 * Held here rather than returned because every handler returns a message code, and
+	 * a bulk action needs to say both which message and how many. The count travels in
+	 * the redirect as a number, never as text — see notice().
+	 */
+	private int $affected = 0;
+
 	public function __construct( Equalify_Iris_Plugin $plugin ) {
 		$this->plugin = $plugin;
 	}
@@ -228,12 +237,24 @@ class Equalify_Iris_Admin {
 				$notice = $this->do_save_settings();
 				break;
 
-			case 'retry':
-				$notice = $this->do_retry();
-				break;
-
 			case 'retry_all_failed':
 				$notice = $this->do_retry_all_failed();
+				break;
+
+			case 'bulk_action':
+				$notice = $this->do_bulk_action( $screen );
+				break;
+
+			case 'delete_page':
+				$notice = $this->do_delete_pages();
+				break;
+
+			case 'exclude':
+				$notice = $this->do_exclude();
+				break;
+
+			case 'include':
+				$notice = $this->do_include();
 				break;
 
 			case 'clear_log':
@@ -386,19 +407,6 @@ class Equalify_Iris_Admin {
 		return 'settings_saved';
 	}
 
-	/** Retry one document. */
-	private function do_retry(): string {
-		$id = isset( $_POST['document_id'] ) ? (int) $_POST['document_id'] : 0; // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-
-		if ( ! $id ) {
-			return 'unknown';
-		}
-
-		Equalify_Iris_Documents::retry( $id );
-
-		return 'retried';
-	}
-
 	/** Retry every failed document. */
 	private function do_retry_all_failed(): string {
 		$failed = Equalify_Iris_Documents::query(
@@ -410,9 +418,270 @@ class Equalify_Iris_Admin {
 
 		foreach ( $failed['items'] as $document ) {
 			Equalify_Iris_Documents::retry( (int) $document->id );
+			++$this->affected;
 		}
 
 		return 'retried_all';
+	}
+
+	/**
+	 * Carry out whatever the bulk action bar was set to, on the ticked documents.
+	 *
+	 * The harmless action happens immediately. The two destructive ones do not: they
+	 * send the admin to a confirmation panel first, which is why this can end in a
+	 * redirect rather than a notice code.
+	 */
+	private function do_bulk_action( string $screen ): string {
+		$choice = isset( $_POST['bulk_action'] ) ? sanitize_key( wp_unslash( $_POST['bulk_action'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
+
+		if ( '' === $choice || ! isset( Equalify_Iris_Admin_Documents::bulk_actions()[ $choice ] ) ) {
+			return 'no_action_chosen';
+		}
+
+		$documents = $this->posted_documents();
+
+		if ( ! $documents ) {
+			return 'nothing_ticked';
+		}
+
+		switch ( $choice ) {
+			case 'retry':
+				return $this->do_retry( $documents );
+
+			case 'include':
+				return $this->do_include();
+
+			case 'delete':
+			case 'exclude':
+				// Never destructive on this request. All this does is show the panel
+				// that asks, which is itself a form that posts the real action.
+				$this->redirect_to_confirm( $screen, $choice, $documents );
+		}
+
+		return 'unknown';
+	}
+
+	/**
+	 * Put documents back in the queue.
+	 *
+	 * Excluded documents are skipped, and this is the reason the check is here rather
+	 * than in Documents::retry(): retry() is the ordinary way back into the queue and
+	 * has no business knowing about exclusions, but a bulk retry over a filtered list
+	 * that happens to include an excluded PDF must not quietly undo the exclusion. An
+	 * exclusion is undone on purpose, with "Convert after all", or not at all.
+	 *
+	 * @param array<object> $documents
+	 */
+	private function do_retry( array $documents ): string {
+		$retried = array();
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::EXCLUDED === (string) $document->status ) {
+				continue;
+			}
+
+			Equalify_Iris_Documents::retry( (int) $document->id );
+
+			$retried[] = $document;
+			++$this->affected;
+		}
+
+		if ( ! $retried ) {
+			return 'all_excluded';
+		}
+
+		$this->log_bulk(
+			$retried,
+			/* translators: %s: a PDF's name. */
+			__( 'A super admin put %s back in the queue.', 'equalify-iris' ),
+			/* translators: %d: how many PDFs. */
+			__( 'A super admin put %d PDFs back in the queue.', 'equalify-iris' )
+		);
+
+		return 'retried';
+	}
+
+	/** Send the admin to the "are you sure?" panel on the Documents screen. */
+	private function redirect_to_confirm( string $screen, string $action, array $documents ): void {
+		$ids = array();
+
+		foreach ( $documents as $document ) {
+			$ids[] = (int) $document->id;
+		}
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'page'      => $screen,
+					'confirm'   => $action,
+					'documents' => implode( ',', $ids ),
+				),
+				network_admin_url( 'admin.php' )
+			)
+		);
+
+		exit;
+	}
+
+	/**
+	 * Delete pages. The PDFs go back in the queue and are converted again.
+	 */
+	private function do_delete_pages(): string {
+		$documents = $this->posted_documents();
+
+		if ( ! $documents ) {
+			return 'unknown';
+		}
+
+		$deleted = array();
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::delete_page( (int) $document->id ) ) {
+				$deleted[] = $document;
+				++$this->affected;
+			}
+		}
+
+		if ( ! $deleted ) {
+			return 'unknown';
+		}
+
+		$this->log_bulk(
+			$deleted,
+			/* translators: %s: a PDF's name. */
+			__( 'A super admin deleted the accessible version of %s. It is back in the queue to be converted again.', 'equalify-iris' ),
+			/* translators: %d: how many PDFs. */
+			__( 'A super admin deleted the accessible version of %d PDFs. They are back in the queue to be converted again.', 'equalify-iris' )
+		);
+
+		return 'page_deleted';
+	}
+
+	/** Stop converting these PDFs, and delete their pages. */
+	private function do_exclude(): string {
+		$documents = $this->posted_documents();
+
+		if ( ! $documents ) {
+			return 'unknown';
+		}
+
+		$reason   = isset( $_POST['reason'] ) ? sanitize_text_field( wp_unslash( $_POST['reason'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
+		$tail     = '' !== $reason ? ': ' . $reason : '.';
+		$excluded = array();
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::exclude( (int) $document->id, $reason ) ) {
+				$excluded[] = $document;
+				++$this->affected;
+			}
+		}
+
+		if ( ! $excluded ) {
+			return 'unknown';
+		}
+
+		$this->log_bulk(
+			$excluded,
+			/* translators: 1: a PDF's name, 2: the reason given, or a full stop. */
+			__( 'A super admin excluded %1$s. Its accessible version was deleted and it will not be converted again%2$s', 'equalify-iris' ),
+			/* translators: 1: how many PDFs, 2: the reason given, or a full stop. */
+			__( 'A super admin excluded %1$d PDFs. Their accessible versions were deleted and they will not be converted again%2$s', 'equalify-iris' ),
+			$tail
+		);
+
+		return 'excluded';
+	}
+
+	/** Undo an exclusion. */
+	private function do_include(): string {
+		$documents = $this->posted_documents();
+
+		if ( ! $documents ) {
+			return 'unknown';
+		}
+
+		$included = array();
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::include_again( (int) $document->id ) ) {
+				$included[] = $document;
+				++$this->affected;
+			}
+		}
+
+		if ( ! $included ) {
+			return 'not_excluded';
+		}
+
+		$this->log_bulk(
+			$included,
+			/* translators: %s: a PDF's name. */
+			__( 'A super admin un-excluded %s. It is back in the queue to be converted.', 'equalify-iris' ),
+			/* translators: %d: how many PDFs. */
+			__( 'A super admin un-excluded %d PDFs. They are back in the queue to be converted.', 'equalify-iris' )
+		);
+
+		return 'included';
+	}
+
+	/**
+	 * Write one log entry per document, or one for the lot.
+	 *
+	 * The activity log is meant to be read as sentences, and fifty sentences that
+	 * differ only in a file name is not something anybody reads — it just buries
+	 * whatever happened before it. So a handful is logged in full, and a bulk run gets
+	 * one line with a count. Either way the log says what changed.
+	 *
+	 * @param array<object> $documents
+	 * @param string        $one       A format string taking the document's name, then $extra.
+	 * @param string        $many      A format string taking a count, then $extra.
+	 * @param string        $extra     A tail both forms end with, such as a reason.
+	 */
+	private function log_bulk( array $documents, string $one, string $many, string $extra = '' ): void {
+		if ( count( $documents ) > 5 ) {
+			Equalify_Iris_Logger::log( sprintf( $many, count( $documents ), $extra ) );
+
+			return;
+		}
+
+		foreach ( $documents as $document ) {
+			Equalify_Iris_Logger::log( sprintf( $one, Equalify_Iris_Documents::display_name( $document ), $extra ) );
+		}
+	}
+
+	/**
+	 * The documents the posted form was about.
+	 *
+	 * Unknown ids are dropped rather than refused: between ticking a box and pressing
+	 * Apply, another admin may have purged one, and failing the whole batch over a row
+	 * that no longer exists helps nobody. The count in the notice afterwards is of what
+	 * actually changed, so nothing is claimed that did not happen.
+	 *
+	 * @return array<object>
+	 */
+	private function posted_documents(): array {
+		// phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
+		$raw = isset( $_POST['documents'] ) ? wp_unslash( $_POST['documents'] ) : array();
+
+		if ( ! is_array( $raw ) ) {
+			$raw = array( $raw );
+		}
+
+		// One screen of rows is fifty, so anything past a couple of hundred is not a
+		// form this plugin drew.
+		$raw = array_slice( $raw, 0, 200 );
+
+		$documents = array();
+
+		foreach ( array_unique( array_map( 'intval', $raw ) ) as $id ) {
+			$document = $id ? Equalify_Iris_Documents::find( $id ) : null;
+
+			if ( $document ) {
+				$documents[] = $document;
+			}
+		}
+
+		return $documents;
 	}
 
 	/** Go back to the screen the button was on, carrying a message code. */
@@ -421,6 +690,7 @@ class Equalify_Iris_Admin {
 			array(
 				'page'                 => $screen,
 				'equalify_iris_notice' => $notice,
+				'equalify_iris_count'  => $this->affected ?: null,
 			),
 			network_admin_url( 'admin.php' )
 		);
@@ -467,12 +737,42 @@ class Equalify_Iris_Admin {
 	 * Because anything in a URL can be edited. Putting the text in the URL would let
 	 * anyone send a super admin a link that displays whatever official-looking
 	 * message they liked inside the WordPress dashboard.
+	 *
+	 * The count that goes with a bulk action is the one thing that does travel in the
+	 * URL, and it is safe for the same reason: it is cast to an integer, so the worst
+	 * anybody can do with it is make a true sentence say the wrong number.
 	 */
 	public static function notice(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification -- read-only display of a fixed message.
-		$code = isset( $_GET['equalify_iris_notice'] ) ? sanitize_key( wp_unslash( $_GET['equalify_iris_notice'] ) ) : '';
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only display of a fixed message.
+		$code  = isset( $_GET['equalify_iris_notice'] ) ? sanitize_key( wp_unslash( $_GET['equalify_iris_notice'] ) ) : '';
+		$count = isset( $_GET['equalify_iris_count'] ) ? max( 1, (int) $_GET['equalify_iris_count'] ) : 1;
+		// phpcs:enable
 
 		if ( ! $code ) {
+			return;
+		}
+
+		// The messages that say how many. Kept apart from the fixed ones because these
+		// need a plural form, and English is not the only language with more than two.
+		$counted = array(
+			'retried'      => _n( '%s PDF is back in the queue.', '%s PDFs are back in the queue.', $count, 'equalify-iris' ),
+			'retried_all'  => _n( '%s failed PDF is back in the queue.', '%s failed PDFs are back in the queue.', $count, 'equalify-iris' ),
+			'page_deleted' => _n(
+				'Deleted %s page. That PDF is back in the queue, so it will be converted again — use “Delete it and never convert again” if it should stay gone.',
+				'Deleted %s pages. Those PDFs are back in the queue, so they will be converted again — use “Delete it and never convert again” if they should stay gone.',
+				$count,
+				'equalify-iris'
+			),
+			'excluded'     => _n( 'Deleted %s page. That PDF will not be converted again.', 'Deleted %s pages. Those PDFs will not be converted again.', $count, 'equalify-iris' ),
+			'included'     => _n( '%s PDF is back in the queue and will be converted.', '%s PDFs are back in the queue and will be converted.', $count, 'equalify-iris' ),
+		);
+
+		if ( isset( $counted[ $code ] ) ) {
+			printf(
+				'<div class="notice notice-success is-dismissible"><p>%s</p></div>',
+				esc_html( sprintf( $counted[ $code ], number_format_i18n( $count ) ) )
+			);
+
 			return;
 		}
 
@@ -486,8 +786,10 @@ class Equalify_Iris_Admin {
 			'needs_token'       => array( 'error', __( 'This Equalify Iris deployment is closed and needs a shared API token. Ask whoever runs it for the token, then enter it below.', 'equalify-iris' ) ),
 			'token_forgotten'   => array( 'success', __( 'The stored API token has been removed.', 'equalify-iris' ) ),
 			'settings_saved'    => array( 'success', __( 'Settings saved.', 'equalify-iris' ) ),
-			'retried'           => array( 'success', __( 'That document is back in the queue.', 'equalify-iris' ) ),
-			'retried_all'       => array( 'success', __( 'Every failed document is back in the queue.', 'equalify-iris' ) ),
+			'not_excluded'      => array( 'error', __( 'None of those PDFs was excluded, so there was nothing to undo. Nothing has been changed.', 'equalify-iris' ) ),
+			'all_excluded'      => array( 'error', __( 'Every PDF you ticked is excluded. Use “Convert after all” to bring one back. Nothing has been changed.', 'equalify-iris' ) ),
+			'no_action_chosen'  => array( 'error', __( 'Choose an action from the dropdown above the table. Nothing has been changed.', 'equalify-iris' ) ),
+			'nothing_ticked'    => array( 'error', __( 'Tick the PDFs you want to act on first. Nothing has been changed.', 'equalify-iris' ) ),
 			'log_cleared'       => array( 'success', __( 'Activity log cleared.', 'equalify-iris' ) ),
 			'unknown'           => array( 'error', __( 'That did not work. Nothing has been changed.', 'equalify-iris' ) ),
 		);

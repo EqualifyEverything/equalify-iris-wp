@@ -68,6 +68,7 @@ $options = array(
 	'equalify_iris_activity_log',
 	'equalify_iris_schema_version',
 	'equalify_iris_rewrite_token',
+	'equalify_iris_deactivated_at',
 
 	// Written by builds before the rewrite flush became per-site. A single
 	// network-wide flag could only ever flush one site's rules.

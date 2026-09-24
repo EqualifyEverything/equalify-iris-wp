@@ -139,8 +139,9 @@ For a `ready` document the job fetches `GET /v1/sessions/{id}/output`, then:
 1. **Cleans the HTML** against an allowlist — a list of what is permitted, not a list of what is
    banned, because a blocklist is always one tag out of date. The allowlist is WordPress's own
    `wp_kses` list extended with the attributes accessibility depends on: `scope`, `headers`,
-   `colspan`, `rowspan`, `aria-*`, `role`, `lang`, `id`.
-2. **Extracts headings** into post meta, which is what the table of contents on the page is built
+   `colspan`, `rowspan`, `aria-*`, `role`, `lang`, `id`. The `<main>` and `<title>` Iris wraps its
+   output in are removed here too — the page has one of each already, and two of either is a problem.
+2. **Extracts headings** into post meta, which is what the Contents panel on the page is built
    from.
 3. **Inserts a post** of the hidden `equalify_iris_doc` post type, with the cleaned HTML as
    `post_content`.
@@ -180,10 +181,16 @@ reader cannot open. Saying so is equally deliberate, because nobody reading the 
 3. Rewrites matching anchors: tags the original with `data-equalify-iris-url` and
    `data-equalify-iris-title`, and appends a separate icon link straight after it.
 
-The icon link carries an `aria-label` naming the document ("Open report in Equalify Iris"), an
-inline SVG marked `aria-hidden`, and a visually hidden text label. Three ways to name the same
-control, because a decorative icon with no accessible name is the exact failure this plugin exists
-to fix.
+Just before the PDF link goes a visually hidden sentence, "An accessible version of this PDF is
+linked next.", so someone reading straight through hears about the better option before they reach
+the PDF. The icon link's name is visually hidden text inside it — "Accessible version of report" —
+and the inline SVG is `aria-hidden` and `focusable="false"`. Real text rather than an `aria-label`,
+because a decorative icon with no accessible name is the exact failure this plugin exists to fix,
+and text is the one form every browser, translator and reading mode keeps.
+
+An icon only appears while its accessible version's page is live — including while that PDF is
+being converted again, when the old page stays up. In forced-colours mode the mark's white parts are
+mapped to `Canvas`, so it keeps its shape in both light and dark high-contrast themes.
 
 The original PDF link is never modified beyond those two data attributes, and never replaced.
 
@@ -197,7 +204,11 @@ exception.
 site. The plugin:
 
 - **Published** → scan the content for PDFs, queue anything new, refresh its sightings.
-- **Unpublished or deleted** → clear its sightings, which may make some documents orphans (step 8).
+- **Unpublished, password-protected, or deleted** → clear its sightings, and retire straight away
+  any document that has just lost its last one (step 8).
+
+That happens whether or not processing is running or automatic processing is on. Neither setting
+is a reason to leave a page's PDF public after the page has gone.
 
 This is why the sweep only has to happen once. After it finishes, the network stays current by
 itself.
@@ -206,7 +217,8 @@ itself.
 
 A document with no sightings on any published post is an **orphan**: the post was unpublished, the
 post was deleted, or somebody removed the link. Its accessible version is set back to draft and
-the document is marked `retired`.
+the document is marked `retired`. This happens in the same request as the edit that caused it; the
+tick's orphan check is only a backstop.
 
 This is a privacy obligation, not housekeeping. Somebody unpublished a page; if our copy of its
 PDF stayed readable at a public URL, we would have quietly undone their decision.
@@ -216,7 +228,25 @@ fraction of a second before its first sighting. Without the grace period, a cron
 that window would retire a PDF it had only just discovered.
 
 If the PDF comes back — the page is republished — the document is **revived**: the same draft page
-is republished at the same URL, so old links keep working.
+is republished at the same URL, so old links keep working. Reviving converts nothing, so it happens
+even with processing off.
+
+Whenever an accessible version's page goes live or stops being live, `clean_post_cache()` is called
+for every post linking to it, which is what the common page-cache plugins listen for. Other caches
+can use the `equalify_iris_linking_pages_changed` action.
+
+### Deactivating and reactivating
+
+**Deactivating** stops the tick and takes the `/equalify-iris/…` rule out of every site's stored
+rewrite rules, so each accessible version's address answers a plain 404. Flushing the rules is not
+enough: the deactivation hook runs with our rule still registered, so a flush would store it again,
+and a stale rule with nothing to answer it serves the site's home page with a 200. The icons stop on
+their own, because they are added as each page renders. Nothing is deleted.
+
+**Reactivating** schedules the tick at once, then catches up on what nobody was watching: any
+sighting on a post that stopped being public while the plugin was off is dropped, the PDFs that
+leaves unlinked are retired, and a finished sweep is reopened to find links that were added or
+removed by editing.
 
 ---
 
@@ -375,9 +405,13 @@ somebody removed a plugin is not recoverable.
 
 | Filter | Purpose |
 | --- | --- |
-| `equalify_iris_icon_label` | The `aria-label` on the icon link. |
-| `equalify_iris_icon_short_label` | The visually hidden text label. |
+| `equalify_iris_icon_label` | The icon link's name, "Accessible version of %s". It is the link's only text. |
+| `equalify_iris_icon_hint` | The hidden sentence before the PDF link. Return `''` to remove it. |
 | `equalify_iris_icon_link` | The whole icon link markup. |
+
+| Action | Purpose |
+| --- | --- |
+| `equalify_iris_linking_pages_changed` | An accessible version went live or stopped being live; purge these posts from a cache WordPress does not know about. |
 
 ---
 

@@ -55,7 +55,19 @@ class Equalify_Iris_Discovery {
 	 * A post changed status. Work out what that means for us.
 	 */
 	public function on_status_change( string $new_status, string $old_status, WP_Post $post ): void {
-		if ( ! Equalify_Iris_Settings::get( 'auto_process' ) ) {
+		if ( 'publish' !== $new_status ) {
+			if ( 'publish' === $old_status ) {
+				// It was public and now is not: draft, pending, private or trashed.
+				// Its PDFs may no longer be public anywhere.
+				//
+				// Deliberately ahead of every setting below. Those decide what we go
+				// looking for; none of them is a reason to leave a PDF's full text up
+				// after the only page linking to it has come down. This used to sit
+				// behind `auto_process`, so with "watch new content" off an
+				// unpublished page's PDF stayed public indefinitely.
+				$this->forget_post( $post->ID );
+			}
+
 			return;
 		}
 
@@ -67,48 +79,56 @@ class Equalify_Iris_Discovery {
 			return;
 		}
 
-		if ( 'publish' === $new_status ) {
-			// Published, or updated while published. Re-scan from scratch: clearing
-			// the old sightings first is what makes a REMOVED link disappear. If we
-			// only added what we found, a PDF unlinked from a post would keep its
-			// sighting forever and never retire.
-			$this->scan_post( $post );
-
-			return;
-		}
-
-		if ( 'publish' === $old_status ) {
-			// It was public and now is not: draft, pending, private or trashed.
-			// Its PDFs may no longer be public anywhere.
-			Equalify_Iris_Documents::clear_sightings_for_post( get_current_blog_id(), $post->ID );
-		}
+		// Published, or updated while published. Re-scan from scratch: clearing the
+		// old sightings first is what makes a REMOVED link disappear. If we only
+		// added what we found, a PDF unlinked from a post would keep its sighting
+		// forever and never retire.
+		//
+		// With "watch new content" off the scan still runs, but only keeps track of
+		// PDFs we already know about. Turning that setting off means "do not queue
+		// anything new", not "stop noticing that a link was taken out".
+		$this->scan_post( $post, (bool) Equalify_Iris_Settings::get( 'auto_process' ) );
 	}
 
 	/**
 	 * A post was deleted for good.
 	 */
 	public function on_delete( int $post_id ): void {
-		Equalify_Iris_Documents::clear_sightings_for_post( get_current_blog_id(), $post_id );
+		$this->forget_post( $post_id );
+	}
+
+	/**
+	 * Drop everything one post linked to, and retire what that leaves linked from nowhere.
+	 */
+	private function forget_post( int $post_id ): void {
+		Equalify_Iris_Documents::retire_if_unlinked(
+			Equalify_Iris_Documents::clear_sightings_for_post( get_current_blog_id(), $post_id )
+		);
 	}
 
 	/**
 	 * Find every PDF on one post and record it.
 	 *
+	 * @param bool $queue_new Whether a PDF we have never seen should be queued. When
+	 *                        false, only PDFs already in the table get a sighting.
 	 * @return int How many PDFs were found, which the sweeper reports as progress.
 	 */
-	public function scan_post( WP_Post $post ): int {
+	public function scan_post( WP_Post $post, bool $queue_new = true ): int {
 		if ( self::$scanning ) {
-			return 0;
-		}
-
-		if ( 'publish' !== $post->post_status ) {
 			return 0;
 		}
 
 		// A password-protected post is not really public: only someone with the
 		// password can read it, so its PDFs should not be converted and published
 		// at an address with no password on it at all.
-		if ( '' !== $post->post_password ) {
+		//
+		// And not merely skipped. A post that has just been given a password is still
+		// `publish`, so no status change fires for it, and if we returned here without
+		// forgetting what it linked to, its PDFs would keep their public accessible
+		// versions on the strength of a page nobody can see.
+		if ( 'publish' !== $post->post_status || '' !== $post->post_password ) {
+			$this->forget_post( $post->ID );
+
 			return 0;
 		}
 
@@ -117,7 +137,7 @@ class Equalify_Iris_Discovery {
 		$site_id = get_current_blog_id();
 
 		// Start clean so links removed since the last scan lose their sighting.
-		Equalify_Iris_Documents::clear_sightings_for_post( $site_id, $post->ID );
+		$previously = Equalify_Iris_Documents::clear_sightings_for_post( $site_id, $post->ID );
 
 		$found = 0;
 
@@ -132,7 +152,16 @@ class Equalify_Iris_Discovery {
 				continue;
 			}
 
-			$document_id = Equalify_Iris_Documents::add( $site_id, $attachment_id, $url );
+			// A PDF already in the table always goes through add(), queueing or not,
+			// because add() is also what brings a retired one back — and that only
+			// republishes the saved page, so it converts nothing and costs nothing.
+			// Without it, relinking a PDF with automatic processing off would leave
+			// its accessible version unpublished for good.
+			$existing = Equalify_Iris_Documents::find_by_attachment( $site_id, $attachment_id );
+
+			$document_id = ( $existing || $queue_new )
+				? Equalify_Iris_Documents::add( $site_id, $attachment_id, $url )
+				: 0;
 
 			if ( $document_id ) {
 				Equalify_Iris_Documents::record_sighting( $document_id, $site_id, $post->ID );
@@ -141,6 +170,10 @@ class Equalify_Iris_Discovery {
 		}
 
 		self::$scanning = false;
+
+		// A link taken out in this edit: the PDF lost its sighting above and did not
+		// get it back. If that was its last one, its page comes down now.
+		Equalify_Iris_Documents::retire_if_unlinked( $previously );
 
 		return $found;
 	}

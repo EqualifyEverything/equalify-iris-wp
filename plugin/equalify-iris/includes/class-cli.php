@@ -18,9 +18,12 @@
  *   3. AUTOMATION. A real cron entry, a deploy script, a bulk retry after fixing a
  *      network problem.
  *
- * Every command here also works through exactly the same code as the dashboard.
- * Nothing is available only on the command line, so a fix applied here is a fix
- * everywhere.
+ * Every command here works through exactly the same code as the dashboard, so a fix
+ * applied here is a fix everywhere. There is one command with no button: `purge`,
+ * which deletes every converted page on the network at once. That is a large,
+ * irreversible thing to do and it belongs somewhere it cannot be reached by a
+ * mis-click. Deleting one document's page IS in the dashboard, because that is the
+ * common case and it should not require server access.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -508,6 +511,311 @@ class Equalify_Iris_CLI {
 		}
 
 		WP_CLI::success( sprintf( 'Queued %d failed document(s) for another try.', count( $failed['items'] ) ) );
+	}
+
+	/**
+	 * Delete a document's public page.
+	 *
+	 * The page is deleted outright rather than trashed. This says nothing about
+	 * whether the PDF should be converted: the document goes back in the queue and
+	 * the page is rebuilt on a later tick, at the same URL. Use it when a page is
+	 * wrong or stale and you want it made again.
+	 *
+	 * To delete a page and have it stay deleted, use `exclude` instead.
+	 *
+	 * The original PDF is never touched.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<id>...]
+	 * : Document ids. Use --all instead to delete every converted page.
+	 *
+	 * [--all]
+	 * : Delete the page of every document that has one.
+	 *
+	 * [--yes]
+	 * : Do not ask for confirmation.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp equalify-iris delete 42
+	 *     wp equalify-iris delete 42 51 63
+	 *     wp equalify-iris delete --all
+	 */
+	public function delete( array $args, array $assoc_args ): void {
+		$all = ! empty( $assoc_args['all'] );
+
+		if ( ! $args && ! $all ) {
+			WP_CLI::error( 'Give one or more document ids, or --all to delete every converted page.' );
+		}
+
+		if ( $args && $all ) {
+			WP_CLI::error( 'Give ids or --all, not both.' );
+		}
+
+		if ( $all ) {
+			$this->delete_all( $assoc_args );
+
+			return;
+		}
+
+		$documents = $this->documents_from_ids( $args );
+
+		WP_CLI::log( 'About to delete the accessible version of:' );
+
+		foreach ( $documents as $document ) {
+			WP_CLI::log( sprintf( '  [%d] %s', (int) $document->id, Equalify_Iris_Documents::display_name( $document ) ) );
+		}
+
+		WP_CLI::log( 'Each will be converted again on a later tick. Use `exclude` to stop that.' );
+		WP_CLI::confirm( 'Continue?', $assoc_args );
+
+		$deleted = 0;
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::delete_page( (int) $document->id ) ) {
+				Equalify_Iris_Logger::log(
+					sprintf(
+						/* translators: %s: a PDF's name. */
+						__( 'A super admin deleted the accessible version of %s. It is back in the queue to be converted again.', 'equalify-iris' ),
+						Equalify_Iris_Documents::display_name( $document )
+					)
+				);
+
+				++$deleted;
+			}
+		}
+
+		WP_CLI::success( sprintf( 'Deleted %d page(s). The PDFs themselves are untouched.', $deleted ) );
+	}
+
+	/**
+	 * Delete every converted page on the network.
+	 */
+	private function delete_all( array $assoc_args ): void {
+		$deleted = 0;
+
+		WP_CLI::warning( 'This deletes every converted page on the network.' );
+		WP_CLI::log( 'They will all be converted again, which on a large network is a lot of work for Equalify Iris.' );
+		WP_CLI::confirm( 'Continue?', $assoc_args );
+
+		// Published and retired are the two statuses that have a page: live for one,
+		// a draft for the other. Working through them by status rather than by
+		// doc_post_id keeps this using the same delete_page() path as everything else.
+		foreach ( array( Equalify_Iris_Documents::PUBLISHED, Equalify_Iris_Documents::RETIRED ) as $status ) {
+			while ( true ) {
+				$batch = Equalify_Iris_Documents::query(
+					array(
+						'status'   => $status,
+						'per_page' => 100,
+					)
+				);
+
+				if ( ! $batch['items'] ) {
+					break;
+				}
+
+				foreach ( $batch['items'] as $document ) {
+					Equalify_Iris_Documents::delete_page( (int) $document->id );
+					++$deleted;
+				}
+			}
+		}
+
+		Equalify_Iris_Logger::log(
+			sprintf(
+				/* translators: %d: how many pages. */
+				__( 'A super admin deleted every accessible version on the network (%d pages). They are all back in the queue.', 'equalify-iris' ),
+				$deleted
+			)
+		);
+
+		WP_CLI::success( sprintf( 'Deleted %d page(s). The PDFs themselves are untouched.', $deleted ) );
+	}
+
+	/**
+	 * Do not convert these PDFs, and delete their pages.
+	 *
+	 * This is the durable one. The documents are marked `excluded` and the sweep
+	 * leaves them alone from then on, so the pages do not come back. Reach for it
+	 * when someone asks for a document to be taken down.
+	 *
+	 * Reversible with `include`.
+	 *
+	 * The original PDF is never touched — this stops the plugin converting it, and
+	 * nothing more. If the PDF itself should not be public, unlink or delete it in
+	 * the media library of the site that owns it.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<id>...]
+	 * : Document ids.
+	 *
+	 * [--reason=<text>]
+	 * : Why, shown on the Documents screen and written to the activity log.
+	 *
+	 * [--yes]
+	 * : Do not ask for confirmation.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp equalify-iris exclude 42
+	 *     wp equalify-iris exclude 42 --reason="Records request 2026-114"
+	 */
+	public function exclude( array $args, array $assoc_args ): void {
+		if ( ! $args ) {
+			WP_CLI::error( 'Give one or more document ids.' );
+		}
+
+		$reason    = isset( $assoc_args['reason'] ) ? sanitize_text_field( (string) $assoc_args['reason'] ) : '';
+		$documents = $this->documents_from_ids( $args );
+
+		WP_CLI::log( 'About to stop converting, and delete the accessible version of:' );
+
+		foreach ( $documents as $document ) {
+			WP_CLI::log( sprintf( '  [%d] %s', (int) $document->id, Equalify_Iris_Documents::display_name( $document ) ) );
+		}
+
+		WP_CLI::confirm( 'Continue?', $assoc_args );
+
+		$excluded = 0;
+
+		foreach ( $documents as $document ) {
+			if ( Equalify_Iris_Documents::exclude( (int) $document->id, $reason ) ) {
+				Equalify_Iris_Logger::log(
+					sprintf(
+						/* translators: 1: a PDF's name, 2: the reason given, or a full stop. */
+						__( 'A super admin excluded %1$s. Its accessible version was deleted and it will not be converted again%2$s', 'equalify-iris' ),
+						Equalify_Iris_Documents::display_name( $document ),
+						'' !== $reason ? ': ' . $reason : '.'
+					)
+				);
+
+				++$excluded;
+			}
+		}
+
+		WP_CLI::success( sprintf( 'Excluded %d document(s). The PDFs themselves are untouched.', $excluded ) );
+	}
+
+	/**
+	 * Convert these PDFs after all, undoing an exclusion.
+	 *
+	 * Only touches documents that are actually excluded, so it cannot be used to
+	 * push a PDF that is too long back into a queue it will only fall out of again.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [<id>...]
+	 * : Document ids.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp equalify-iris include 42
+	 */
+	public function include( array $args, array $assoc_args ): void {
+		if ( ! $args ) {
+			WP_CLI::error( 'Give one or more document ids.' );
+		}
+
+		$included = 0;
+
+		foreach ( $this->documents_from_ids( $args ) as $document ) {
+			if ( ! Equalify_Iris_Documents::include_again( (int) $document->id ) ) {
+				WP_CLI::warning(
+					sprintf(
+						'[%d] is %s, not excluded. Left alone.',
+						(int) $document->id,
+						(string) $document->status
+					)
+				);
+
+				continue;
+			}
+
+			Equalify_Iris_Logger::log(
+				sprintf(
+					/* translators: %s: a PDF's name. */
+					__( 'A super admin un-excluded %s. It is back in the queue to be converted.', 'equalify-iris' ),
+					Equalify_Iris_Documents::display_name( $document )
+				)
+			);
+
+			++$included;
+		}
+
+		WP_CLI::success( sprintf( 'Queued %d document(s) to be converted.', $included ) );
+	}
+
+	/**
+	 * Delete every trace of this plugin's work, ready for uninstalling it.
+	 *
+	 * Deletes every converted page and empties both of the plugin's tables. What it
+	 * does NOT do is stop the plugin working: if you leave it activated and running,
+	 * the next sweep finds all the same PDFs and converts them again from scratch.
+	 * This is for the ten minutes before you delete the plugin.
+	 *
+	 * To remove pages and have them stay removed, use `exclude` instead.
+	 *
+	 * Deleting the plugin afterwards removes its settings and tables too. The
+	 * original PDFs are never touched by any of this.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--yes]
+	 * : Do not ask for confirmation.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp equalify-iris purge
+	 */
+	public function purge( array $args, array $assoc_args ): void {
+		$counts = Equalify_Iris_Documents::counts_by_status();
+
+		WP_CLI::warning( 'This deletes every converted page on the network and empties the queue.' );
+		WP_CLI::log( sprintf( '  %d document(s) tracked, of which %d are published.', (int) $counts['total'], (int) $counts[ Equalify_Iris_Documents::PUBLISHED ] ) );
+		WP_CLI::log( 'If the plugin stays activated and running, everything will be converted again.' );
+
+		WP_CLI::confirm( 'This cannot be undone. Continue?', $assoc_args );
+
+		$deleted = Equalify_Iris_Documents::purge_pages();
+		$rows    = Equalify_Iris_Database::empty_tables();
+
+		Equalify_Iris_Logger::log(
+			sprintf(
+				/* translators: 1: how many pages, 2: how many queue rows. */
+				__( 'A super admin purged everything: %1$d pages deleted and %2$d queue rows cleared.', 'equalify-iris' ),
+				$deleted,
+				$rows
+			)
+		);
+
+		WP_CLI::success( sprintf( 'Deleted %d page(s) and cleared %d queue row(s).', $deleted, $rows ) );
+		WP_CLI::log( 'The PDFs themselves are untouched. Delete the plugin to remove its settings as well.' );
+	}
+
+	/**
+	 * Look up documents by id, refusing the whole batch if any id is wrong.
+	 *
+	 * Checking every id before acting on any of them means a typo in the third id
+	 * does not leave the first two already deleted.
+	 *
+	 * @return array<object>
+	 */
+	private function documents_from_ids( array $ids ): array {
+		$documents = array();
+
+		foreach ( $ids as $id ) {
+			$document = Equalify_Iris_Documents::find( (int) $id );
+
+			if ( ! $document ) {
+				WP_CLI::error( sprintf( 'No document with id %d. Nothing has been changed.', (int) $id ) );
+			}
+
+			$documents[] = $document;
+		}
+
+		return $documents;
 	}
 
 	/**

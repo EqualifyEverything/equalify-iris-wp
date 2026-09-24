@@ -22,9 +22,12 @@ right trade: this is an accessibility floor, not a preference.
 
 ### The original PDF is never touched, moved, or replaced.
 
-We are not a remediation tool. The PDF stays where it is, its link keeps working, and it remains
-the authoritative version — which the converted page says out loud. Some people need the PDF: to
-print, to file, because it is the record.
+We are not a remediation tool. The PDF stays where it is, its link keeps working, and the converted
+page always links back to it. Some people need the PDF: to print, to file, because it is the record.
+
+What the page does not do is rank the two. Whether the PDF or the accessible version is the
+authoritative copy is the publisher's call, and a plugin announcing on their behalf that the
+inaccessible one is the real one is both presumptuous and the wrong message.
 
 ### The icon is a second, separate link, not a replacement.
 
@@ -252,11 +255,24 @@ plugin knows about. The sightings table already exists for retirement, so the fr
 answer from a single join on an indexed key. Almost every page also short-circuits before the query
 runs, because the content does not contain `.pdf` at all.
 
-### The icon link carries three accessible names, deliberately.
+### The icon link is named by visually hidden text, not an `aria-label`.
 
-An `aria-label`, an `aria-hidden` SVG, and a visually hidden text label. Redundant on purpose: an
-icon-only control with no accessible name is the precise failure this plugin exists to fix, and it
-is not acceptable to reproduce it in our own markup.
+"Accessible version of report", inside the link, with the SVG `aria-hidden`. It used to carry an
+`aria-label` ("Open report in Equalify Iris") and a different hidden label as well, so what someone
+heard depended on their screen reader, and neither said what the link actually leads to. Text is the
+one name every tool keeps: browser page translation skips `aria-label`, reading modes drop it, and
+there is no second copy to drift.
+
+No `title` and no hover tooltip either. A `title` is read twice by some screen readers and never
+shown to keyboard or touch users; a hover tooltip has to be dismissible (WCAG 1.4.13), which needs
+JavaScript. The hidden sentence before the PDF link is what explains the icon.
+
+### Deactivating removes our rewrite rule from every site, not just flushes.
+
+The deactivation hook runs while our rule is still registered, so `flush_rewrite_rules()` there
+stores it again. With the post type gone, that stale rule matches, finds nothing, and WordPress
+serves the home page with a 200 — a soft 404 at every accessible version's address. Deleting each
+site's stored rules instead lets WordPress rebuild them without us on the next request.
 
 ### `icon.css` is a guest, not a landlord.
 
@@ -264,10 +280,11 @@ It loads on every page of every site in the network. So: no reset, no `!importan
 no colour rules at all — the SVG uses `fill="currentColor"` and inherits whatever contrast the theme
 has already got right.
 
-### The visually hidden label repeats WordPress's `.screen-reader-text` rules instead of relying on them.
+### The visually hidden label repeats WordPress's `.screen-reader-text` rules instead of using the class.
 
-We cannot assume the theme defines that class. If it does not and we do not, the label becomes
-visible text next to every icon. And it is clipped rather than `display: none`, because
+We cannot assume the theme defines that class, and a theme that does may restyle it — some make it
+visible on focus, for skip links. If it does not and we do not, the label becomes visible text next
+to every icon. And it is clipped rather than `display: none`, because
 `display: none` and `visibility: hidden` hide text from screen readers too, which would defeat the
 whole point.
 
@@ -300,6 +317,19 @@ own `wp_kses` list extended with what accessibility needs: `scope`, `headers`, `
 Cleaning at save time rather than render time means the cost is paid once per document instead of
 once per visitor.
 
+### `<main>` and `<title>` are stripped, and old documents are repaired at render time instead of migrated.
+
+Iris converts a PDF into a whole HTML document, so its output arrives wrapped in the furniture of a
+page. Kept, that `<main>` nests inside the template's own and gives the page two main landmarks, and
+that `<title>` — holding the source filename — can decide what the browser tab, the bookmark and the
+shared link say, because the document's title comes from the first `<title>` in the tree.
+
+The cleaner now removes both, which fixes every document converted from here on and none of the ones
+already stored. Those are fixed by a filter on `the_content` scoped to our post type. That is the
+better half of the choice: a migration over thousands of posts can half-finish, and it edits the only
+copy of the converted document there is, whereas a filter on the way out cannot lose anything and
+costs a `stripos` on a page that has neither tag.
+
 ### The insert is wrapped in `kses_remove_filters()` / `kses_init_filters()`.
 
 Cron has no logged-in user, and WordPress's own content filtering would strip tags from our
@@ -307,17 +337,63 @@ already-cleaned HTML on the grounds that "nobody" is not allowed to post them. R
 for the duration of one insert is the narrowest fix available; the content has already been
 allowlisted at this point.
 
-### The page says it is machine-made, and links the original prominently.
+### The page says where it came from, and never hides the original — but neither is the first thing on it.
 
-Not a disclaimer for our benefit — useful information. It explains any oddity the reader hits, and it
-makes sure nobody is trapped in our version. The link includes page count and file size, because
-"PDF, 4 MB, 18 pages" lets someone on a metered connection decide before downloading.
+Both are true and neither is what the reader came for. They live in a panel called "About this
+accessible version of a PDF", closed on arrival, alongside the conversion date and the page the PDF
+appears on. The link to the original still carries its page count and file size, because "PDF, 4 MB,
+18 pages" lets someone on a metered connection decide before downloading, and it is still the loudest
+thing inside the panel: nobody may be trapped in our version.
 
-### `document.css` styles our furniture, not the document.
+What changed is only the order. A reader who arrives at a document should meet the document.
 
-A converted document should look like it belongs to the site it is on. The exceptions are tables and
-figures, which get the minimum needed to stay readable — themes handle unexpected tables badly, and a
-data table that has lost its borders is exactly the problem this plugin sets out to fix.
+### That note is two sentences, and was four.
+
+"Equalify Iris made this page automatically from a PDF, so it can be read with a screen reader,
+resized, and searched. If something looks wrong, tell whoever runs this website." That is the whole
+of it: what this page is, and what to do about it. It replaced two paragraphs at opposite ends of the
+panel that between them said the same thing at three times the length — and the longer it was, the
+less of it anybody read. A note nobody finishes is not a disclosure.
+
+### The viewer is a standalone page, not a themed post.
+
+It prints its own `<!DOCTYPE html>`, and `class-frontend.php` takes the theme's stylesheets and web
+fonts out of the queue for that one URL. This reversed an earlier decision that `document.css` should
+style our furniture and leave the text to the theme, which sounded respectful and worked badly: a
+theme has typography for posts and its own patterns and nothing for a fifty-page report full of
+tables, footnotes and six heading levels, so the result was as good or bad as whichever theme was
+active. On a block theme it was worse than that — `get_header()` fell back to WordPress's deprecated
+theme-compat header, which emits its own `<h1>` holding the site name, so every document page had two
+first-level headings.
+
+`equalify_iris_document_standalone` returns the theme's stylesheets if a site genuinely wants them.
+
+### The meta is behind `<details>`, and `<details>` is the only option worth having.
+
+The panels need no JavaScript, and this plugin ships none. They are announced as collapsed or
+expanded groups, they are keyboard operable, they work in a text browser, and they open with our
+stylesheet missing. The page this replaces on equalify.app is a React app that renders the document
+client-side and shows nothing at all with scripting off — which is not an accessible version of
+anything, and is the reason its approach was studied and not copied.
+
+The cost is real and shaped two other decisions. Content inside a closed `<details>` is removed from
+the accessibility tree, exactly like `display: none`. So the document's title stays outside the
+panels — hidden, the page would have no heading at all for anyone navigating by heading. And because
+a closed `<details>` cannot be forced open by CSS, the line saying where the page came from is
+printed a second time by a paragraph that is `display: none` on screen: a printout that does not say
+what it is gets filed as if it were the PDF.
+
+### The site's name is not on the page at all.
+
+It was one quiet line in a masthead, and it was still the site talking about itself above somebody
+else's document. The link home is a fact in the About panel, next to the page the PDF appears on,
+which is the more useful destination anyway.
+
+### Tables and figures are styled defensively, and always were.
+
+Themes handle unexpected tables badly, and a data table that has lost its borders is exactly the
+problem this plugin sets out to fix. This is the one part of `document.css` that predates the
+standalone page unchanged.
 
 ### The table of contents is flat, indented by level, never nested.
 

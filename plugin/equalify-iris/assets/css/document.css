@@ -1,20 +1,419 @@
 /*
  * WHAT IS THIS FILE?
  *
- * Styles for the accessible document page itself.
+ * The whole look of the accessible document page. Not a few tweaks on top of the
+ * theme — the reading design itself.
  *
- * THE GUIDING RULE: STYLE OUR FURNITURE, NOT THE DOCUMENT.
+ * WHY IT STOPPED DEFERRING TO THE THEME
  *
- * Everything the plugin adds — the note explaining what this page is, the facts
- * list, the table of contents, the skip link — is styled here. The document's own
- * content is left almost entirely to the theme, so a converted document looks like
- * it belongs to the site it is on.
+ * It used to style only the furniture the plugin adds and leave the document's own
+ * text to the theme, so that a converted document looked like it belonged to the site.
+ * That sounds right and works badly. A theme has typography for posts, pages and its
+ * own patterns; it has nothing for a fifty-page government report full of tables,
+ * footnotes and six levels of heading. The result was as good or as bad as whichever
+ * theme happened to be active, which is not a standard anybody can rely on.
  *
- * The two exceptions are tables and figures, which get the minimum needed to stay
- * readable. Themes vary wildly in how they handle tables they did not expect, and a
- * data table that has lost its borders is much harder to follow, which is exactly
- * the problem this plugin sets out to fix.
+ * So this page brings its own. One measure, one type scale, one set of colours that
+ * are known to have the contrast they need, and no dependency on a class the theme may
+ * or may not define.
+ *
+ * IT NOW OWNS THE WHOLE PAGE, NOT A COLUMN IN THE MIDDLE OF ONE
+ *
+ * The template stopped calling get_header() and get_footer(), and class-frontend.php
+ * takes the theme's stylesheets out of the queue here, so this file is the only design
+ * on the page. That means it has to do things a stylesheet living inside a theme never
+ * had to: reset the body margin, set the page background, and lay out the whole page.
+ * Those are the rules under "The page" and "The bar" below, scoped to
+ * `.equalify-iris-viewer` — the class the template puts on <body>.
+ *
+ * The two scopes are deliberate and do different jobs. `.equalify-iris-viewer` is the
+ * page; `.equalify-iris-document` is the document region. Everything that reads the
+ * document is scoped to the second, so it all still works if a theme replaces the
+ * template and renders the document inside a page of its own.
+ *
+ * THE ONE THING THAT MOVES
+ *
+ * Everything the plugin has to say about the document lives in two closed <details>
+ * panels in the bar, so the first thing on the page is the document. This file styles
+ * those panels — the marker, the chevron, the sticky column they sit in — and that is
+ * the only interactive thing in the file. It is still no JavaScript: <details> is the
+ * platform's own disclosure widget and it opens with the stylesheet missing too.
+ *
+ * WHAT IS DELIBERATELY NOT HERE
+ *
+ * Nothing in this file adds an element, a wrapper or a badge. The page is exactly the
+ * markup in templates/single-document.php, because every element added around a
+ * document is one more thing between a reader and the text. This file only decides how
+ * what is already there looks.
+ *
+ * And no JavaScript and no web font. A stylesheet that fails to load must leave a page
+ * that is still perfectly readable, which is the case here: the markup is a heading,
+ * two disclosures — which still work — and the document.
+ *
+ * HOW TO OVERRIDE IT
+ *
+ * Every colour, size and space below comes from a custom property on
+ * .equalify-iris-document. Set them again in the theme and everything follows:
+ *
+ *     .equalify-iris-document { --eq-measure: 38rem; --eq-link: #7b1fa2; }
  */
+
+/* --------------------------------------------------------------------------
+ * The page
+ * -------------------------------------------------------------------------- */
+
+/*
+ * The tokens are declared on both scopes on purpose.
+ *
+ * On <body> because the bar and the page background need them and are outside the
+ * document region; on the document region because it must still be self-sufficient when
+ * a theme renders it inside its own page, where there is no .equalify-iris-viewer.
+ * Declaring them twice costs nothing and removes an order-of-loading question.
+ */
+.equalify-iris-viewer,
+.equalify-iris-document {
+	/* Colours. Every pair here is at least 7:1 against its background, which is
+	 * AAA for body text — worth having on a page whose entire purpose is being
+	 * readable, and it leaves room for a reader's own contrast adjustments. */
+	--eq-ink: #14161a;
+	--eq-ink-soft: #4a4f57;
+	--eq-paper: #ffffff;
+	--eq-paper-soft: #f5f6f7;
+	--eq-rule: #d5d9dd;
+	--eq-rule-strong: #9aa1a9;
+	--eq-link: #0b4ea2;
+	--eq-link-hover: #08356e;
+	--eq-accent: #00694e;
+	--eq-highlight: #fff3b0;
+
+	/* The colour the focus ring's inner halo is drawn in. It has to match whatever the
+	 * focused thing is sitting on, or the halo reads as a white smear — so it is a
+	 * property rather than a fixed colour, and the bar sets it to its own background. */
+	--eq-focus-halo: var(--eq-paper);
+
+	/* The measure. 38rem is around 70 characters at this type size, which is the
+	 * range continuous reading is comfortable in: long enough not to break every
+	 * sentence, short enough to find the start of the next line without hunting. */
+	--eq-measure: 38rem;
+
+	/* Typography. Two families, on purpose. The document is set in a serif because
+	 * that is what documents are set in and it makes long text easier to stay in;
+	 * everything the plugin says for itself is set in the interface font, so it
+	 * reads as a note about the document rather than part of it. Both are stacks of
+	 * fonts already on the reader's machine — a web font would be one more thing to
+	 * fail, and it would arrive after the text it is meant to set. */
+	--eq-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--eq-font-doc: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+
+	box-sizing: border-box;
+	background: var(--eq-paper);
+	color: var(--eq-ink);
+	font-family: var(--eq-font-ui);
+	font-size: 1.0625rem;
+	line-height: 1.6;
+
+	/* Stop a phone in landscape inflating the text past the measure set below, without
+	 * preventing the reader's own zoom. */
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+/*
+ * The page itself. body has a margin by default and no theme is resetting it any more.
+ *
+ * There is no min-height here and there must not be one: a background set on <body>
+ * already propagates to the whole canvas, so a one-paragraph document fills the window
+ * without help. A min-height of 100vh would add the admin bar's 32px offset on top of a
+ * full viewport and give logged-in users a scrollbar on every document.
+ */
+.equalify-iris-viewer {
+	margin: 0;
+}
+
+.equalify-iris-viewer *,
+.equalify-iris-viewer *::before,
+.equalify-iris-viewer *::after,
+.equalify-iris-document *,
+.equalify-iris-document *::before,
+.equalify-iris-document *::after {
+	box-sizing: inherit;
+}
+
+.equalify-iris-document {
+	padding: 2rem 1.25rem 4rem;
+}
+
+@media (min-width: 60rem) {
+	.equalify-iris-document {
+		padding: 3rem 2rem 5rem;
+	}
+}
+
+/* The article is the column. Centred rather than left-aligned so the page does not
+ * look like it lost half of itself on a wide screen. */
+.equalify-iris-document > article {
+	max-width: var(--eq-measure);
+	margin: 0 auto;
+}
+
+/* --------------------------------------------------------------------------
+ * The layout
+ *
+ * One column on a phone: the bar, then the document. With both panels closed the bar is
+ * a title and two lines, so the document starts within the first screenful, which is the
+ * whole point of the arrangement.
+ *
+ * From 60rem the bar becomes a sidebar. Not for looks — an opened Contents list on a
+ * wide screen needs to stay visible while the document scrolls past it, and a table of
+ * contents you have to scroll back up to reach is one you use once.
+ *
+ * WHY THE BREAKPOINT IS 60rem AND WHY THAT IS ALSO THE ZOOM ANSWER
+ *
+ * Below 60rem there is no sidebar and no sticky positioning. That is the same state a
+ * reader at 400% zoom is in, because zooming shrinks the viewport in rem terms — so the
+ * single-column layout is what they get, with no horizontal scrolling and nothing pinned
+ * over the text. WCAG 1.4.10 comes out right by not doing anything clever, rather than
+ * by a rule written for it.
+ * -------------------------------------------------------------------------- */
+
+@media (min-width: 60rem) {
+	.equalify-iris-viewer .equalify-iris-viewer-layout {
+		display: grid;
+
+		/* minmax(0, 1fr) rather than 1fr: a wide table inside the document would
+		 * otherwise stretch the column and push the page sideways. */
+		grid-template-columns: 20rem minmax(0, 1fr);
+
+		/*
+		 * The pair is centred as one object, and this is not cosmetic tidying.
+		 *
+		 * Without it the second column takes the whole rest of the window and the
+		 * reading measure centres itself inside that, which on a 1280px screen leaves
+		 * a hand's width of nothing between the bar and the first word — the bar over
+		 * on the left, the text adrift in the middle, and no relationship between them.
+		 * Capping the layout at the sidebar plus the measure plus its gutters keeps the
+		 * two next to each other at any window size.
+		 */
+		max-width: calc(20rem + var(--eq-measure) + 4rem);
+		margin-inline: auto;
+
+		/* Not `stretch`, which is the default. Two reasons, and both matter: a grid
+		 * item stretched to the row's height would be as tall as the whole document,
+		 * so giving the bar a background would paint a full-height slab down the side
+		 * of the page — and `position: sticky` only has room to travel when the item
+		 * is shorter than the grid area it sits in. */
+		align-items: start;
+	}
+}
+
+/* --------------------------------------------------------------------------
+ * The bar
+ *
+ * The title, and the two panels. Set in the interface font and small throughout, because
+ * everything in here is the plugin talking about the document rather than the document.
+ *
+ * WHY IT HAS A BACKGROUND OF ITS OWN
+ *
+ * Because otherwise it is white text-on-white beside white text-on-white, and the only
+ * thing saying "these two lines are not part of the document" is their size. A softer
+ * paper tone does that in a way nobody has to work out. It is one step off white, not a
+ * colour: the bar is a place to look when you want something, not a thing demanding to
+ * be looked at.
+ *
+ * WHY A CARD ON WIDE SCREENS AND A BAND ON NARROW ONES
+ *
+ * They are different jobs. Stacked above the document on a phone, the bar is a band
+ * across the top and its bottom edge is the line between it and the text. As a sidebar it
+ * is an object beside the document, so it is inset, bordered and rounded, and it ends
+ * where its content ends. A tinted column running the full height of a long document
+ * would be a piece of furniture pretending to be structure.
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-viewer .equalify-iris-viewer-bar {
+	padding: 1.25rem 1.25rem 0.4rem;
+	background: var(--eq-paper-soft);
+	border-bottom: 1px solid var(--eq-rule);
+	font-family: var(--eq-font-ui);
+	font-size: 0.9375rem;
+
+	/* The focus ring's halo, on this surface. */
+	--eq-focus-halo: var(--eq-paper-soft);
+}
+
+@media (min-width: 60rem) {
+	.equalify-iris-viewer .equalify-iris-viewer-bar {
+		/* Its top edge lines up with the document's first line: this margin, plus a
+		 * border and the padding below, comes to the document's own padding-top. */
+		margin: 1.75rem 0 2.5rem 1.5rem;
+		padding: 1.25rem 1.25rem 0.5rem;
+		border: 1px solid var(--eq-rule);
+		border-radius: 8px;
+
+		position: sticky;
+
+		/* The same 1.75rem gap while scrolling as before it started. The admin bar's
+		 * height is added when there is one — see below. */
+		top: calc(var(--eq-bar-top, 0px) + 1.75rem);
+
+		/* A ceiling, not a height. With both panels closed the card is four lines
+		 * tall and stays that way; opened, a forty-item Contents list scrolls inside
+		 * the card rather than growing it past the window, which also means it never
+		 * moves the document's own scroll position. */
+		max-height: calc(100vh - var(--eq-bar-top, 0px) - 3.5rem);
+		overflow-y: auto;
+
+		/* And when it does scroll, reaching the end of the list does not then start
+		 * scrolling the document behind it. */
+		overscroll-behavior: contain;
+	}
+}
+
+/*
+ * WordPress's admin bar is fixed at the top for logged-in users, 32px tall at this
+ * width. Without this the sticky card slides underneath it. The 782px breakpoint where
+ * the admin bar becomes 46px and stops being fixed is below 60rem, so there is nothing
+ * to handle there: the bar is not sticky at that size.
+ */
+@media (min-width: 60rem) {
+	.equalify-iris-viewer.admin-bar .equalify-iris-viewer-bar {
+		--eq-bar-top: 32px;
+	}
+}
+
+/*
+ * The document's title.
+ *
+ * It is the page's only <h1>, and it is set quiet on purpose: one line of small bold
+ * text, not a display heading. It is here to say which document this is, and the
+ * document's own first heading — whatever Iris found on page one — should be the loudest
+ * thing a reader meets.
+ *
+ * It stays outside the panels rather than inside the About one, because the content of a
+ * closed <details> is removed from the accessibility tree. Hidden here, the page would
+ * have no heading at all for anyone navigating by heading until the document's own
+ * headings began.
+ */
+.equalify-iris-viewer .equalify-iris-viewer-title {
+	margin: 0 0 1rem;
+	font-family: var(--eq-font-ui);
+	font-size: 1rem;
+	font-weight: 700;
+	line-height: 1.35;
+	letter-spacing: 0.01em;
+	color: var(--eq-ink);
+	overflow-wrap: break-word;
+}
+
+/* --------------------------------------------------------------------------
+ * The panels
+ *
+ * Two <details>: Contents, and About this accessible version of a PDF. Closed on
+ * arrival, so the page opens on the document.
+ *
+ * The rules here replace the default disclosure triangle with a chevron, which is the
+ * one piece of pure decoration in this file and is here for a reason: the triangle's size
+ * and position are not consistent between browsers, and it cannot be given a colour that
+ * is guaranteed to be visible on this background. Removing it does not remove anything
+ * from the accessibility tree — the open or closed state comes from the element, not from
+ * the marker — so a screen reader still announces the panel as collapsed or expanded.
+ * -------------------------------------------------------------------------- */
+
+/*
+ * A line above each panel, and none below the last one: the bar's own edge is already
+ * there, and a second line a few pixels inside it is the kind of detail that makes a
+ * design look accidental. So these are dividers between things, not boxes around them.
+ */
+.equalify-iris-viewer .equalify-iris-panel {
+	border-top: 1px solid var(--eq-rule);
+}
+
+.equalify-iris-viewer .equalify-iris-panel > summary {
+	/* display other than list-item is what removes the marker in most browsers; the
+	 * two rules below cover the rest. Flex so the chevron is a laid-out box rather
+	 * than something positioned against a summary whose height depends on wrapping. */
+	display: flex;
+	align-items: baseline;
+	gap: 0.55rem;
+	list-style: none;
+	padding: 0.8rem 0.15rem;
+	font-weight: 600;
+	line-height: 1.4;
+	color: var(--eq-ink);
+	cursor: pointer;
+}
+
+.equalify-iris-viewer .equalify-iris-panel > summary::-webkit-details-marker {
+	display: none;
+}
+
+.equalify-iris-viewer .equalify-iris-panel > summary::before {
+	content: "";
+	flex: none;
+	width: 0.42em;
+	height: 0.42em;
+	border-right: 2px solid var(--eq-rule-strong);
+	border-bottom: 2px solid var(--eq-rule-strong);
+	transform: translateY(-0.12em) rotate(-45deg);
+	transition: transform 120ms ease-out;
+}
+
+.equalify-iris-viewer .equalify-iris-panel[open] > summary::before {
+	transform: translateY(-0.2em) rotate(45deg);
+}
+
+.equalify-iris-viewer .equalify-iris-panel > summary:hover {
+	color: var(--eq-link-hover);
+}
+
+.equalify-iris-viewer .equalify-iris-panel-body {
+	padding: 0 0.15rem 1.15rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Links
+ *
+ * Underlined, always. An underline is the one link indicator that does not depend on
+ * being able to tell two colours apart, which is why WCAG treats colour alone as a
+ * failure. The offset keeps the line clear of descenders so it stays legible.
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document a,
+.equalify-iris-viewer-bar a {
+	color: var(--eq-link);
+	text-decoration: underline;
+	text-underline-offset: 0.15em;
+	text-decoration-thickness: max(1px, 0.06em);
+}
+
+.equalify-iris-document a:hover,
+.equalify-iris-viewer-bar a:hover {
+	color: var(--eq-link-hover);
+	text-decoration-thickness: max(2px, 0.1em);
+}
+
+/*
+ * One focus ring for everything focusable on the page.
+ *
+ * Two rings, in fact: a thick one in the link colour and a thin one just inside it in
+ * whatever colour the focused thing is sitting on, so there is always a gap between the
+ * ring and the surface behind it and the ring cannot be lost against it. That inner
+ * colour is `--eq-focus-halo`, which the bar and the note each set for themselves.
+ * outline rather than border, so nothing moves when it appears.
+ *
+ * The summaries are in here because a disclosure that cannot be seen to have focus is a
+ * disclosure a keyboard user loses their place in. `summary` needs saying explicitly:
+ * it is focusable without a tabindex attribute, so the [tabindex] selector misses it.
+ */
+.equalify-iris-document a:focus-visible,
+.equalify-iris-document button:focus-visible,
+.equalify-iris-document [tabindex]:focus-visible,
+.equalify-iris-viewer-bar a:focus-visible,
+.equalify-iris-viewer-bar summary:focus-visible {
+	outline: 3px solid var(--eq-link);
+	outline-offset: 2px;
+	border-radius: 2px;
+	box-shadow: 0 0 0 5px var(--eq-focus-halo, var(--eq-paper));
+}
 
 /* --------------------------------------------------------------------------
  * The skip link
@@ -30,9 +429,11 @@
 	top: 0;
 	z-index: 100000;
 	padding: 0.75em 1.25em;
-	background: #fff;
-	color: #111;
+	background: var(--eq-paper);
+	color: var(--eq-link);
 	border: 2px solid currentColor;
+	border-radius: 4px;
+	font-family: var(--eq-font-ui);
 	text-decoration: underline;
 }
 
@@ -42,71 +443,72 @@
 }
 
 /* --------------------------------------------------------------------------
- * The header we add above the document
+ * Inside the About panel
+ *
+ * The note, then the facts: the original PDF, where it appears, the site it belongs to,
+ * when it was converted. All of it one click behind a labelled summary, which is where
+ * it belongs — it is true, useful, and not what the reader came for.
  * -------------------------------------------------------------------------- */
 
-.equalify-iris-document-header {
-	margin-bottom: 2rem;
-}
-
 /*
- * The "this is a machine-made version" note.
+ * The note saying what this page is.
  *
- * A left border and a tinted background rather than a coloured box, so it reads as
- * an aside and not as a warning. It is information, not a problem.
- *
- * currentColor for the border means it works on a light or dark theme without us
- * guessing which one we are in.
+ * A coloured edge and nothing else. It used to be a filled box with a border, which was
+ * right when it sat on white paper above the document and wrong now: inside a tinted card
+ * it became a card within a card, and a box drawn inside a box reads as a mistake rather
+ * than as emphasis. The rule down its left side is enough to mark it as the panel's
+ * opening statement.
  */
-.equalify-iris-document-note {
-	border-inline-start: 4px solid currentColor;
-	padding: 0.75rem 1rem;
-	background: rgba(0, 0, 0, 0.04);
-	font-size: 0.95em;
+.equalify-iris-viewer .equalify-iris-document-note {
+	margin: 0;
+	padding: 0.1rem 0 0.1rem 0.8rem;
+	border-inline-start: 3px solid var(--eq-accent);
+	color: var(--eq-ink-soft);
+	font-size: 0.875rem;
+	line-height: 1.55;
 }
 
-/* The facts list: original PDF, where it appears, when it was converted. */
-.equalify-iris-document-facts {
+.equalify-iris-viewer .equalify-iris-document-facts {
 	list-style: none;
 	margin: 1rem 0 0;
 	padding: 0;
+	font-size: 0.875rem;
+	color: var(--eq-ink-soft);
 }
 
-.equalify-iris-document-facts > li {
-	margin: 0.35rem 0;
+.equalify-iris-viewer .equalify-iris-document-facts > li {
+	margin: 0 0 0.55rem;
+	line-height: 1.45;
 }
 
 /*
- * The link to the original PDF is the most important thing in the header, so it is
- * the only thing given weight. Never hide the way out of our version.
+ * The link to the original PDF is the most important thing in the panel, so it is the
+ * only thing given weight and full size. Never hide the way out of our version: some
+ * readers need the PDF itself, and one of the two things this panel exists for is being
+ * where they reliably find it.
  */
-.equalify-iris-original-link {
+.equalify-iris-viewer .equalify-iris-original-link {
+	font-size: 0.9375rem;
 	font-weight: 600;
 }
 
 /* --------------------------------------------------------------------------
  * The table of contents
+ *
+ * No box and no heading of its own: it is inside a panel whose summary says Contents,
+ * and drawing a border around something already inside a bordered disclosure is two
+ * boxes saying one thing.
  * -------------------------------------------------------------------------- */
 
-.equalify-iris-toc {
-	margin: 0 0 2.5rem;
-	padding: 1rem 1.25rem;
-	border: 1px solid rgba(0, 0, 0, 0.15);
-	border-radius: 4px;
-}
-
-.equalify-iris-toc h2 {
-	margin-top: 0;
-	font-size: 1.1em;
-}
-
-.equalify-iris-toc ol {
+.equalify-iris-viewer .equalify-iris-toc ol {
 	margin: 0;
 	padding-inline-start: 1.5rem;
+	font-size: 0.875rem;
 }
 
-.equalify-iris-toc li {
-	margin: 0.3rem 0;
+.equalify-iris-viewer .equalify-iris-toc li {
+	margin: 0 0 0.5rem;
+	line-height: 1.45;
 }
 
 /*
@@ -118,67 +520,238 @@
  * documents skip levels constantly. A flat list that is always correct beats a
  * nested one that is sometimes wrong.
  */
-.equalify-iris-toc-level-3 {
-	margin-inline-start: 1.25rem;
+.equalify-iris-viewer .equalify-iris-toc-level-3 {
+	margin-inline-start: 1rem;
 }
 
-.equalify-iris-toc-level-4 {
-	margin-inline-start: 2.5rem;
+.equalify-iris-viewer .equalify-iris-toc-level-4 {
+	margin-inline-start: 2rem;
 }
 
 /* --------------------------------------------------------------------------
- * The document's own content
+ * The document itself
  *
- * Deliberately minimal. See the note at the top of this file.
+ * This is what the page is for, so it gets the deliberate part of the design: the
+ * serif face, a generous line height, and headings that are told apart by weight and
+ * space rather than by getting steadily larger. Iris returns whatever heading levels
+ * the original had, up to six deep, and a scale that keeps growing runs out long
+ * before six.
  * -------------------------------------------------------------------------- */
 
-.equalify-iris-document-body {
+.equalify-iris-document .equalify-iris-document-body {
+	font-family: var(--eq-font-doc);
+	font-size: 1.125rem;
+	line-height: 1.7;
+	color: var(--eq-ink);
+
+	/* A long unbroken string — a URL in a footnote, a reference number — must not
+	 * push the column wider than the screen. */
+	overflow-wrap: break-word;
+}
+
+/*
+ * The skip link lands on the <main> that carries this class. No ring: this is a
+ * container, not a control, and drawing a box around the whole document to say "you have
+ * arrived" is more alarming than useful. The landmark and heading that get read out are
+ * what tell the reader they arrived.
+ */
+.equalify-iris-document:focus,
+.equalify-iris-document .equalify-iris-document-body:focus {
+	outline: none;
+}
+
+.equalify-iris-document .equalify-iris-document-body > *:first-child {
+	margin-top: 0;
+}
+
+.equalify-iris-document .equalify-iris-document-body p {
+	margin: 0 0 1.15em;
+}
+
+.equalify-iris-document .equalify-iris-document-body h1,
+.equalify-iris-document .equalify-iris-document-body h2,
+.equalify-iris-document .equalify-iris-document-body h3,
+.equalify-iris-document .equalify-iris-document-body h4,
+.equalify-iris-document .equalify-iris-document-body h5,
+.equalify-iris-document .equalify-iris-document-body h6 {
+	margin: 2.25em 0 0.6em;
+	font-family: var(--eq-font-doc);
+	font-weight: 700;
+	line-height: 1.25;
+	color: var(--eq-ink);
+	text-wrap: balance;
+
 	/*
-	 * A measure limit. Long lines are hard to track back from at the end, and a
-	 * converted document is often a wall of text with no images to break it up.
-	 * 70ch is a comfortable measure for continuous reading.
+	 * Room above a heading you have just jumped to.
+	 *
+	 * Following a link in the table of contents scrolls the heading to the very top
+	 * of the window, where a theme's sticky header often covers it — so the reader
+	 * arrives looking at the wrong paragraph. This reserves space for that, and it
+	 * costs nothing when there is no sticky header.
 	 */
-	max-width: 70ch;
+	scroll-margin-top: 5rem;
 }
 
-/* Tables can be wider than the measure — they are data, not prose. */
-.equalify-iris-document-body table {
-	max-width: none;
+/*
+ * A converted document commonly repeats its own title as an <h1> on every page, so
+ * this page can have several. They are the document's, not ours, and they are set a
+ * shade smaller than the page title above so the page keeps one visual top.
+ */
+.equalify-iris-document .equalify-iris-document-body h1 {
+	font-size: 1.625rem;
+}
+
+.equalify-iris-document .equalify-iris-document-body h2 {
+	font-size: 1.4375rem;
+}
+
+.equalify-iris-document .equalify-iris-document-body h3 {
+	font-size: 1.25rem;
+}
+
+.equalify-iris-document .equalify-iris-document-body h4 {
+	font-size: 1.125rem;
+}
+
+/* Past four levels, size stops being a useful signal. Small caps and colour carry
+ * the last two, and the heading is still a real heading to anything reading the
+ * markup, which is where the outline actually lives. */
+.equalify-iris-document .equalify-iris-document-body h5,
+.equalify-iris-document .equalify-iris-document-body h6 {
+	font-family: var(--eq-font-ui);
+	font-size: 0.9375rem;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--eq-ink-soft);
+}
+
+.equalify-iris-document .equalify-iris-document-body ul,
+.equalify-iris-document .equalify-iris-document-body ol {
+	margin: 0 0 1.15em;
+	padding-inline-start: 1.75em;
+}
+
+.equalify-iris-document .equalify-iris-document-body li {
+	margin: 0 0 0.4em;
+}
+
+.equalify-iris-document .equalify-iris-document-body li > ul,
+.equalify-iris-document .equalify-iris-document-body li > ol {
+	margin: 0.4em 0 0.6em;
+}
+
+.equalify-iris-document .equalify-iris-document-body blockquote {
+	margin: 1.75em 0;
+	padding: 0 0 0 1.25em;
+	border-inline-start: 3px solid var(--eq-rule-strong);
+	color: var(--eq-ink-soft);
+	font-style: normal;
+}
+
+.equalify-iris-document .equalify-iris-document-body hr {
+	height: 0;
+	margin: 2.5em 0;
+	border: 0;
+	border-top: 1px solid var(--eq-rule);
+}
+
+.equalify-iris-document .equalify-iris-document-body code,
+.equalify-iris-document .equalify-iris-document-body pre {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.9em;
+}
+
+.equalify-iris-document .equalify-iris-document-body pre {
+	padding: 1rem 1.1rem;
+	background: var(--eq-paper-soft);
+	border: 1px solid var(--eq-rule);
+	border-radius: 4px;
+	overflow-x: auto;
+}
+
+.equalify-iris-document .equalify-iris-document-body img {
+	max-width: 100%;
+	height: auto;
+}
+
+.equalify-iris-document .equalify-iris-document-body strong,
+.equalify-iris-document .equalify-iris-document-body b {
+	font-weight: 700;
+}
+
+/* --------------------------------------------------------------------------
+ * Tables
+ *
+ * The part of a PDF that most often survives conversion as data and most often looks
+ * wrong. A data table that has lost its borders is much harder to follow, which is
+ * exactly the problem this plugin sets out to fix.
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document .equalify-iris-document-body table {
 	width: 100%;
+	margin: 1.75em 0;
 	border-collapse: collapse;
-	margin: 1.5rem 0;
+	font-family: var(--eq-font-ui);
+	font-size: 0.9375rem;
+	line-height: 1.45;
 }
 
-.equalify-iris-document-body th,
-.equalify-iris-document-body td {
-	border: 1px solid rgba(0, 0, 0, 0.2);
-	padding: 0.5rem 0.65rem;
+.equalify-iris-document .equalify-iris-document-body th,
+.equalify-iris-document .equalify-iris-document-body td {
+	padding: 0.5rem 0.7rem;
+	border: 1px solid var(--eq-rule-strong);
 	text-align: start;
 	vertical-align: top;
 }
 
 /* Header cells need to look like header cells, not just be marked as them. */
-.equalify-iris-document-body th {
-	background: rgba(0, 0, 0, 0.05);
-	font-weight: 600;
+.equalify-iris-document .equalify-iris-document-body th {
+	background: var(--eq-paper-soft);
+	font-weight: 700;
 }
 
 /* A table's caption is its accessible name. Keep it visible and attached. */
-.equalify-iris-document-body caption {
+.equalify-iris-document .equalify-iris-document-body caption {
 	caption-side: top;
+	padding: 0 0 0.5rem;
 	text-align: start;
+	font-weight: 700;
+	color: var(--eq-ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+ * Figures, footnotes and the form fields a PDF sometimes has
+ * -------------------------------------------------------------------------- */
+
+.equalify-iris-document .equalify-iris-document-body figure {
+	margin: 1.75em 0;
+}
+
+.equalify-iris-document .equalify-iris-document-body figcaption {
+	margin-top: 0.5rem;
+	font-family: var(--eq-font-ui);
+	font-size: 0.875rem;
+	color: var(--eq-ink-soft);
+}
+
+/*
+ * Footnote references.
+ *
+ * The reference is a small target in the middle of a line, so it gets a little
+ * padding to tap. The target highlight below matters more than it looks: after
+ * jumping to footnote 12, working out which of a dozen identical lines you landed on
+ * is genuinely hard without it.
+ */
+.equalify-iris-document .equalify-iris-document-body sup a {
+	padding: 0 0.2em;
+	text-decoration: none;
 	font-weight: 600;
-	padding-bottom: 0.5rem;
 }
 
-.equalify-iris-document-body figure {
-	margin: 1.5rem 0;
-}
-
-.equalify-iris-document-body figcaption {
-	font-size: 0.95em;
-	opacity: 0.85;
-	margin-top: 0.35rem;
+.equalify-iris-document .equalify-iris-document-body :target {
+	background: var(--eq-highlight);
+	box-shadow: 0 0 0 4px var(--eq-highlight);
+	border-radius: 2px;
 }
 
 /*
@@ -186,71 +759,200 @@
  * fill-in fields in the original. Making them look like fields, and unmistakably
  * not-editable, stops anyone trying to submit our copy.
  */
-.equalify-iris-document-body input[readonly],
-.equalify-iris-document-body textarea[readonly] {
-	background: rgba(0, 0, 0, 0.04);
-	border: 1px solid rgba(0, 0, 0, 0.25);
+.equalify-iris-document .equalify-iris-document-body input[readonly],
+.equalify-iris-document .equalify-iris-document-body textarea[readonly] {
 	padding: 0.35rem 0.5rem;
+	border: 1px solid var(--eq-rule-strong);
+	border-radius: 3px;
+	background: var(--eq-paper-soft);
+	font-family: var(--eq-font-ui);
+	font-size: 0.9375rem;
+	color: var(--eq-ink-soft);
 }
 
-.equalify-iris-document-body fieldset {
-	border: 1px solid rgba(0, 0, 0, 0.2);
-	padding: 1rem;
-	margin: 1.5rem 0;
+.equalify-iris-document .equalify-iris-document-body fieldset {
+	margin: 1.75em 0;
+	padding: 1rem 1.1rem;
+	border: 1px solid var(--eq-rule);
+	border-radius: 4px;
 }
 
-/*
- * Footnote references.
- *
- * The target highlight matters more than it looks: after jumping to footnote 12,
- * finding which of a dozen identical lines you landed on is genuinely hard without
- * it.
- */
-.equalify-iris-document-body sup a {
-	text-decoration: none;
-	padding: 0 0.15em;
-}
-
-.equalify-iris-document-body :target {
-	background: rgba(255, 230, 0, 0.35);
-	outline: 2px solid currentColor;
-	outline-offset: 2px;
+.equalify-iris-document .equalify-iris-document-body legend {
+	padding: 0 0.4em;
+	font-family: var(--eq-font-ui);
+	font-size: 0.9375rem;
+	font-weight: 700;
 }
 
 /* --------------------------------------------------------------------------
- * The footer we add below the document
+ * The print-only note
+ *
+ * Not display:none as an afterthought — display:none is the whole reason this element
+ * can exist. It keeps the paragraph out of the accessibility tree as well as off the
+ * screen, so a screen reader does not read the same sentence twice: once here and once
+ * in the About panel.
+ *
+ * It exists because a closed <details> cannot be forced open by CSS, in print or
+ * anywhere else. Everything else the panel says can wait until somebody opens it; that
+ * this page came from a PDF cannot, because a printout that does not say where it came
+ * from is a printout that gets filed as if it were the PDF.
  * -------------------------------------------------------------------------- */
 
-.equalify-iris-document-footer {
-	margin-top: 3rem;
-	padding-top: 1rem;
-	border-top: 1px solid rgba(0, 0, 0, 0.15);
-	font-size: 0.95em;
+.equalify-iris-document .equalify-iris-print-note {
+	display: none;
 }
 
 /* --------------------------------------------------------------------------
  * Printing
  *
- * People print these. Our furniture is not part of the document, so it goes.
+ * People print these, and a printed copy is often the one that gets filed. Our
+ * furniture is not part of the document, so the panels go — closed, they would print as
+ * two summaries and nothing else — and the print-only note above takes over the one
+ * sentence that has to survive.
+ *
+ * The title stays, because a filed page has to say which document it is, and here it
+ * stops being quiet: on paper there is no bar and nothing for it to compete with.
  * -------------------------------------------------------------------------- */
 
 @media print {
 	.equalify-iris-skip-link,
-	.equalify-iris-toc,
-	.equalify-iris-document-footer {
+	.equalify-iris-viewer .equalify-iris-panel {
 		display: none;
 	}
 
-	.equalify-iris-document-body {
+	.equalify-iris-document .equalify-iris-print-note {
+		display: block;
+		margin: 0 0 1.5em;
+		padding: 0 0 0.5em;
+		border-bottom: 1pt solid #000;
+		font-family: var(--eq-font-ui);
+		font-size: 9pt;
+		line-height: 1.4;
+		overflow-wrap: break-word;
+	}
+
+	/* The sidebar and everything that pins it. On paper there is no viewport to stick
+	 * to, and a max-height in vh is meaningless. */
+	.equalify-iris-viewer .equalify-iris-viewer-layout {
+		display: block;
+	}
+
+	.equalify-iris-viewer .equalify-iris-viewer-bar {
+		position: static;
+		max-height: none;
+		overflow: visible;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+
+		/* Never print a tint. It costs ink, and on a mono printer it comes out as a grey
+		 * wash behind the title. */
+		background: none;
+	}
+
+	.equalify-iris-viewer .equalify-iris-viewer-title {
+		margin: 0 0 0.5rem;
+		font-family: var(--eq-font-doc);
+		font-size: 17pt;
+		line-height: 1.2;
+		color: #000;
+	}
+
+	.equalify-iris-document {
+		padding: 0;
+		font-size: 11pt;
+	}
+
+	.equalify-iris-document > article {
 		max-width: none;
+	}
+
+	.equalify-iris-document .equalify-iris-document-body {
+		font-size: 11pt;
+	}
+
+	/* Black on white, and links printed in black: a coloured link is grey on a mono
+	 * printer, which is the worst of both. */
+	.equalify-iris-document,
+	.equalify-iris-document a {
+		background: #fff;
+		color: #000;
+	}
+
+	/* Do not break a heading away from the text it introduces, or split a table
+	 * across pages when it can be helped. */
+	.equalify-iris-document .equalify-iris-document-body h1,
+	.equalify-iris-document .equalify-iris-document-body h2,
+	.equalify-iris-document .equalify-iris-document-body h3,
+	.equalify-iris-document .equalify-iris-document-body h4 {
+		break-after: avoid;
+	}
+
+	.equalify-iris-document .equalify-iris-document-body tr,
+	.equalify-iris-document .equalify-iris-document-body figure {
+		break-inside: avoid;
 	}
 }
 
-/* Respect a reader who has asked for less movement. Nothing here animates, but
- * saying so keeps the intent clear if anything is added later. */
+/* --------------------------------------------------------------------------
+ * Forced colours
+ *
+ * Windows High Contrast Mode and similar replace the palette outright. Our custom
+ * properties are then irrelevant, and the borders that separate table cells are the
+ * thing that must survive — so they are restated in system colours.
+ * -------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+	.equalify-iris-viewer .equalify-iris-document-note,
+	.equalify-iris-document .equalify-iris-document-body th,
+	.equalify-iris-document .equalify-iris-document-body td,
+	.equalify-iris-document .equalify-iris-document-body fieldset,
+	.equalify-iris-document .equalify-iris-document-body pre {
+		border: 1px solid CanvasText;
+	}
+
+	/* The panels' dividing lines and the chevron are drawn with custom properties,
+	 * which forced colours discard. Both are how the bar reads as a set of separate
+	 * things, so both are restated in system colours. */
+	.equalify-iris-viewer .equalify-iris-panel {
+		border-top: 1px solid CanvasText;
+	}
+
+	/*
+	 * The bar's tint is gone in forced colours — every background becomes Canvas — so the
+	 * one thing that separated it from the document has to be a border instead.
+	 */
+	.equalify-iris-viewer .equalify-iris-viewer-bar {
+		border: 1px solid CanvasText;
+	}
+
+	.equalify-iris-viewer .equalify-iris-panel > summary::before {
+		border-right-color: CanvasText;
+		border-bottom-color: CanvasText;
+	}
+
+	.equalify-iris-document a:focus-visible,
+	.equalify-iris-document [tabindex]:focus-visible,
+	.equalify-iris-viewer-bar a:focus-visible,
+	.equalify-iris-viewer-bar summary:focus-visible {
+		outline: 3px solid LinkText;
+		box-shadow: none;
+	}
+}
+
+/* Respect a reader who has asked for less movement. The chevron's rotation is the only
+ * thing on the page that moves, and it is not worth a moment's discomfort to anybody. */
 @media (prefers-reduced-motion: reduce) {
-	.equalify-iris-document * {
-		animation: none !important;
-		transition: none !important;
+	.equalify-iris-viewer *,
+	.equalify-iris-viewer *::before,
+	.equalify-iris-viewer *::after,
+	.equalify-iris-document *,
+	.equalify-iris-document *::before,
+	.equalify-iris-document *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
 	}
 }
