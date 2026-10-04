@@ -48,7 +48,7 @@ echo
 echo "The test site now talks to: ${url}"
 echo
 echo "Check it worked:"
-echo "    ddev wp equalify-iris status"
+echo "    ddev wp equalify-iris check"
 echo
 echo "If calls fail with a connection error, Iris is probably not running, or is on a"
 echo "different port. Confirm from inside the container:"

@@ -1,219 +1,156 @@
 # The test WordPress multisite
 
-A throwaway three-site WordPress network for testing the Equalify Iris plugin. It is not part of
-the plugin and it is not committed: everything WordPress-shaped in here is ignored by git, and one
-script builds it from nothing.
+A throwaway three-site WordPress network for testing the Equalify Iris plugin. Everything
+WordPress-shaped in here is ignored by git, and one script builds it from nothing.
 
 ```
 ./setup.sh
 ```
 
-First run takes a few minutes, mostly downloading container images and WordPress. Later runs take
-seconds and skip anything already done.
-
-When it finishes it prints the URLs and the login. The short version:
+First run takes a few minutes. Later runs take seconds and skip anything already done.
 
 | | |
 | --- | --- |
-| Network dashboard | https://equalify-iris-test.ddev.site/wp-admin/network/ |
-| Plugin | https://equalify-iris-test.ddev.site/wp-admin/network/admin.php?page=equalify-iris |
+| Network screen | https://equalify-iris-test.ddev.site/wp-admin/network/admin.php?page=equalify-iris |
+| Site screen | https://equalify-iris-test.ddev.site/wp-admin/admin.php?page=equalify-iris |
 | Login | `admin` / `admin` |
-
----
 
 ## What you need
 
-- **DDEV** — `brew install ddev/ddev/ddev`
-- **A Docker engine that is running** — Docker Desktop, colima (`colima start`), or OrbStack.
+- **DDEV**: `brew install ddev/ddev/ddev`
+- **A running Docker engine**: Docker Desktop, colima (`colima start`), or OrbStack.
 
-Nothing else. WordPress, the database, PHP, and WP-CLI all live in the containers.
+WordPress, the database, PHP and WP-CLI all live in the containers. DDEV rather than something
+lighter because multisite needs MySQL or MariaDB.
 
-**Why DDEV rather than something lighter?** WordPress multisite needs MySQL or MariaDB. The
-lightweight options — wp-env's SQLite mode, `wp server`, Valet — either cannot do multisite at all
-or need more setting up than DDEV does.
+## What it builds
 
----
+**Three sites**: `/` (main), `/research`, `/library`. Subdirectories, because `*.ddev.site` only
+resolves one level deep.
 
-## What the setup script builds
+**The plugin, mounted live** from `../plugin/equalify-iris` and network-activated.
 
-**Three sites**, as a subdirectory network:
+**On every site**, PDFs in the media library linked from these pages:
 
-- `https://equalify-iris-test.ddev.site` — the main site
-- `https://equalify-iris-test.ddev.site/research` — Research Office
-- `https://equalify-iris-test.ddev.site/library` — University Library
-
-Subdirectories rather than subdomains because `*.ddev.site` only resolves one level deep, so
-`research.equalify-iris-test.ddev.site` would need an `/etc/hosts` edit on every machine.
-
-**The plugin, mounted live** from `../plugin/equalify-iris` and network-activated. It is a bind
-mount, not a copy: edit the real source and the test site changes immediately. There is no build
-step and no way to accidentally test a stale copy.
-
-**Content on every site**, chosen so that the interesting cases are all present from the start:
-
-| Page | Status | Why it is there |
+| Page | Status | Why |
 | --- | --- | --- |
-| Documents | published | Two PDFs on one page → two icons. Also links a PDF on another domain, which must be ignored. |
-| Linked Twice | published | The same PDF linked twice → queued once, two icons. |
-| A Very Long Manual | published | A 30-page PDF → "too long", not "failed". |
-| Draft Page | draft | Its PDF must never be converted. |
-| Private Page | private | Same. |
+| Documents | published | Two PDFs, plus a PDF on another domain that must never be touched |
+| Linked Twice | published | The same PDF twice, so both links have to switch |
+| A Very Long Manual | published | A 30-page PDF, refused before upload |
+| Draft Page | draft | Its PDF must not be listed until the page is published |
+| Private Page | private | Its PDF must never be listed |
 
----
+| Custom Field | published | A PDF linked only from a `brochure_pdf` custom field |
+
+And PDFs linked from places that are not posts:
+
+- the **Uncategorized** category's description (`category-guide.pdf`);
+- on `/library`, a classic theme (Twenty Twenty-One): a **Main** menu in the primary location
+  (`menu-handout.pdf`) and a Custom HTML widget in the footer (`widget-flyer.pdf`);
+- on the other sites, a block theme: a navigation menu linking to `menu-handout.pdf`.
+
+Plus `unlinked-file.pdf`, which nothing links to and must never be listed.
 
 ## Using it
 
 ```bash
-# Check that Equalify Iris will accept us. Nothing to sign into: the
-# production deployment is open, so this should just say so.
-ddev wp equalify-iris connect
+./bin/start-mock-iris.sh       # a fake Iris in the container, and point the network at it
 
-# Only if you are pointed at a deployment that has been given a shared
-# secret (`server.api_token` in the Iris config):
-# ddev wp equalify-iris connect --token=THE-SECRET
-
-# Turn the process on
-ddev wp equalify-iris start
-
-# Run the background job by hand — this is the one you will use constantly
-./tick.sh          # one tick
-./tick.sh 10       # ten in a row
-
-# Look at what happened
-ddev wp equalify-iris status
-ddev wp equalify-iris doctor
-ddev wp equalify-iris list
-ddev wp equalify-iris log
+ddev wp equalify-iris tag 5    # or Equalify Iris → Send to Iris for Tagging
+./tick.sh 3                    # three runs of the network's background job, then the status
+./tick.sh 3 https://equalify-iris-test.ddev.site/research   # the same, showing /research's status
 ```
 
-**Why run ticks by hand?** In production the job runs every five minutes and does a small, capped
-amount of work each time — at most one upload, five status checks, two imports, twenty posts swept.
-Waiting five minutes between each step of a test is intolerable, and one tick is rarely enough to
-carry a document from "found" to "published". So: several ticks, on demand.
+**Use the mock unless you mean otherwise.** Real Iris reports problems as public GitHub issues.
+The mock tags nothing; it hands back the original PDF with a comment added, so you can see the link
+switch. Upload a file with `fail` in its name and link it from a published page to see a failed
+conversion, `encrypted` to see a refusal, or `slow` to see the job give up waiting (with
+`ddev wp equalify-iris run --seconds=40`).
 
-Expect a wait in the middle. Iris takes minutes to convert. Ticks during that wait genuinely have
-nothing to do but poll.
+For real conversions, run Iris locally (`cd ../../equalify-iris && npm run dev`), then
+`./bin/point-at-local-iris.sh`. `--production` points at the public service.
 
-### Other useful commands
+The mock stops when the container restarts; run `./bin/start-mock-iris.sh` again.
+
+### Other commands
 
 ```bash
-ddev launch /wp-admin/network/          # open the dashboard
-ddev logs -f                            # web server log
-ddev exec tail -f wp-content/debug.log  # PHP notices (WP_DEBUG_LOG is on)
-ddev wp db query "SELECT status, COUNT(*) FROM wp_equalify_iris_documents GROUP BY status"
-ddev ssh                                # a shell in the container
-ddev xdebug on                          # step through a tick
+ddev wp equalify-iris status            # settings, the job, every PDF on the site
+ddev wp equalify-iris check             # can Iris tag PDFs?
+ddev wp equalify-iris read [--network]  # read a site's content again, or every site's
+ddev wp equalify-iris run               # one run of the job, as a scheduler would
+ddev wp equalify-iris remove 5          # delete a tagged copy
+ddev exec tail -f wp/wp-content/debug.log
+./bin/make-oversized-pdf.sh             # a 51 MB PDF, for the size limit
 ./reset.sh                              # delete everything and start again
 ```
 
----
+## Things worth testing
 
-## Testing against a local Iris
+**Only public PDFs**
 
-Recommended, and not only for speed. Iris reports conversion problems as **public GitHub issues**,
-which can include extracts of the document it was converting. Test documents are usually nonsense,
-but the habit is worth having.
+- The list has the PDFs from Documents, Linked Twice, A Very Long Manual and Custom Field, the
+  category description, and the menu (plus the widget on `/library`), and nothing else. **Linked
+  from** names the menu, widgets or category.
+- Remove the PDF from the menu: it leaves the list on the next run.
+- Publish Draft Page: its PDF appears, and with automatic tagging on it is queued at once.
+- Unpublish it again: the PDF leaves the list. If it was still waiting, it is never uploaded.
+- `wp equalify-iris tag` on the private memo's id is refused.
 
-```bash
-cd ../../equalify-iris && npm run dev     # Iris on port 8080
-cd -
-./bin/point-at-local-iris.sh              # point the test site at it
-./bin/point-at-local-iris.sh --production # put it back
-```
+**The list**
 
-The URL it sets uses `host.docker.internal`, because inside the container "localhost" means the
-container, not your machine.
+- **Send to Iris for Tagging** from a row, from the bulk action, and with the "all untagged" button.
+- After a few ticks: **View Iris-Tagged Version** opens `name-accessible.pdf`; **Delete Iris-Tagged
+  Version** asks first, then removes it.
+- The 30-page PDF fails with a sentence about pages, and is never uploaded.
+- An editor or subscriber has no Equalify Iris menu, and a direct URL is refused.
 
----
+**Links**
 
-## Things worth deliberately testing
+- Logged out, every link to a tagged PDF opens the tagged copy, including both on Linked Twice, and
+  the ones in the menu, widget and category archive.
+- The example.org link and untagged PDFs are unchanged.
+- Delete the tagged copy, or deactivate the plugin: the links go back.
 
-The list below is the one that catches real bugs. Most of these have gone wrong at least once.
+**Automatic tagging**
 
-**Discovery**
+- Site switch on: public PDFs are queued on the next run.
+- Off, with untagged public PDFs: the dashboard notice shows on every admin page but the Equalify
+  Iris screen.
+- Network switch on: every site's public PDFs are queued, and site admins see the list but no switch
+  and no notice.
+- Network screen: each site's counts, **Manage PDFs** opens that site's list, and **Send N untagged
+  PDFs to Iris for Tagging** queues them.
 
-- A PDF on a published page is found; on a draft or private page it is not.
-- A PDF on another domain is never uploaded.
-- The same PDF linked twice is one document with two icons.
-- Publishing a new page with a PDF queues it without a sweep.
-- Adding a site to the network reopens a sweep that had finished.
+**The background job**
 
-**Limits**
+- Network screen → **Background job**: last run, sites waiting, PDFs at Iris.
+- A new site shows "Not read yet"; **Look for PDFs** reads it on the next run.
+- Search the site list by address.
+- A `slow` PDF with `run --seconds=40` fails after three runs, saying the job could not wait long
+  enough.
 
-- A 30-page PDF becomes "too long", is not retried, and has no Retry button.
-- An oversized file becomes "too big" (`./bin/make-oversized-pdf.sh`).
-- Never more than two documents in flight at once, whatever the settings say.
-- A file Iris rejects outright fails **once**, not five times: `attempts` stays at 0 and the reason
-  is Iris's own sentence. Easiest to force against a local Iris by uploading a non-PDF, or by
-  temporarily lowering `MAX_PDF_PAGES` upstream so a 4-page sample is refused.
-- `wp equalify-iris doctor` reports the page-limit check as OK. Lower `MAX_PDF_PAGES` in a local
-  Iris and it should say the two numbers disagree.
+**Lifecycle**
 
-**Partial conversions**
-
-- A document Iris delivers with a `@page-failed` comment still publishes, and the activity log
-  carries a warning naming it and the number of missing pages.
-- That page has `_equalify_iris_pages_missing` set above 0; a complete one has 0.
-- Easiest to force with a mock output file containing a `@page-failed 2` comment after `</main>`.
-
-**The queue**
-
-- `./tick.sh 20` from scratch gets at least one document published.
-- Two ticks at once do not double-import: `./tick.sh 1 & ./tick.sh 1 & wait`.
-- Stop halts everything; Start resumes where it left off, not from the beginning.
-- A failure can be retried, and stops retrying after five attempts.
-
-**Retirement — the one that matters most**
-
-- Unpublish a page with a converted PDF → within a tick or two the document page is a draft and its
-  URL is no longer public.
-- Republish it → the same URL works again.
-- Remove just the link from a published page → same as unpublishing.
-- Delete the page outright → same.
-
-**The front end**
-
-- The icon appears immediately after the PDF link, and the original link is unchanged.
-- Tab to the icon: it has a visible focus ring and a screen reader announces the document's name.
-- The document page has exactly one `<h1>`, and the document's own headings start at `<h2>`.
-- The skip link works, and the table of contents appears only with three or more headings.
-- Disable JavaScript entirely. Nothing should change — the plugin ships none.
-
-**The admin**
-
-- Every screen with a non-super-admin user: no menu, and a direct URL is refused.
-- Every button twice in a row, and refresh after each — nothing should re-run.
-- With Iris unreachable (`./bin/point-at-local-iris.sh 9999`): five ticks open the circuit breaker,
-  the Overview says "paused" in plain words, and retirement still happens.
-
-**Uninstall**
-
-- Deactivate → nothing is deleted, reactivate and carry on.
-- Delete → tables and settings gone, converted pages still in `wp_posts`. That is deliberate: they
-  are public URLs people have shared.
-
----
+- Deleting an attachment deletes its tagged copy.
+- Deactivate halfway through, reactivate: sites that used it read their content again and carry on.
+- Delete the plugin: no `-accessible.pdf` files, no `_equalify_iris_` meta, no `equalify_iris_`
+  options left.
 
 ## When it goes wrong
 
 | Symptom | Fix |
 | --- | --- |
-| `ddev start` fails | Is Docker running? `colima start`, or start Docker Desktop. |
-| Browser warns about the certificate | `mkcert -install`, then `ddev restart`. |
-| Site 404s everywhere | `ddev wp rewrite flush` |
-| Sub-site admin pages 404 | Subdirectory multisite needs the nginx rules in `.ddev/nginx_full/`. `ddev restart`. |
-| Plugin missing from the plugin list | The bind mount did not attach. `ddev restart`, then check `.ddev/docker-compose.plugin.yaml`. |
-| Confusing state you no longer trust | `./reset.sh` — it is meant to be cheap. |
-| White screen | `ddev exec tail -50 wp-content/debug.log` |
+| `ddev start` fails | Start Docker: `colima start`, or Docker Desktop. |
+| "could not find a project" | Run the command from inside `test-site/`. |
+| Certificate warning | `mkcert -install`, then `ddev restart`. |
+| Sub-site admin pages 404 | Needs the nginx rules in `.ddev/nginx_full/`. `ddev restart`. |
+| Plugin missing | The bind mount did not attach. `ddev restart`, check `.ddev/docker-compose.plugin.yaml`. |
+| Runs fail to reach Iris | The mock stopped. `./bin/start-mock-iris.sh`. |
+| State you no longer trust | `./reset.sh` |
 
----
+## What is committed
 
-## What is committed and what is not
-
-**Committed** — the scaffolding: `.ddev/config.yaml`, `.ddev/docker-compose.plugin.yaml`,
-`setup.sh`, `reset.sh`, `tick.sh`, `bin/`, this file.
-
-**Ignored** — everything they produce: `wp/` (all of WordPress, including `wp-config.php` and
-uploads) and `samples/` (the generated PDFs).
-
-So a fresh clone contains no WordPress at all, and `./setup.sh` produces a working one.
+The scaffolding: `.ddev/config.yaml`, `.ddev/docker-compose.plugin.yaml`, the nginx rules,
+`setup.sh`, `reset.sh`, `tick.sh`, `bin/`, this file. Not `wp/` (WordPress, `wp-config.php`,
+uploads) or `samples/` (the generated PDFs).

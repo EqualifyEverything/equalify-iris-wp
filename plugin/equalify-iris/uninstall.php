@@ -2,27 +2,19 @@
 /**
  * WHAT IS THIS FILE?
  *
- * What happens when someone deletes the plugin — not deactivates it, deletes it.
+ * What happens when the plugin is deleted, not just deactivated. WordPress runs it
+ * without loading the rest of the plugin, so names are repeated here.
  *
- * WHY IS IT A SEPARATE FILE?
+ * DELETED: the tagged copies, their post meta, every setting on every site, and
+ * the job. Links already went back to the original PDFs when the plugin stopped
+ * running; the original files are never touched.
  *
- * WordPress runs this file on its own, without loading the rest of the plugin. That
- * is why it repeats a couple of table names instead of calling our own classes:
- * nothing else is loaded, so there is nothing to call.
+ * ON A LARGE NETWORK
  *
- * WHAT IT DOES AND DOES NOT DELETE
- *
- * DELETED: our two tables, our settings, the activity log. Those are ours, they are
- * meaningless without the plugin, and leaving them behind is the kind of litter that
- * accumulates in a network's database for years.
- *
- * NOT DELETED: the converted document pages. Those are real published content with
- * real URLs that people have bookmarked, shared, and linked to. Deleting a thousand
- * live pages because someone removed a plugin would be a shock, not a cleanup — and
- * it is not recoverable. They become ordinary orphaned posts of an unregistered post
- * type: invisible, harmless, and still there if the plugin comes back.
- *
- * Nor are the original PDFs touched, obviously. We never owned those.
+ * Only sites that used the plugin have anything to delete, and they are marked in
+ * the network's blogmeta table, so the other sites are never visited. Each is
+ * cleaned with direct queries rather than switch_to_blog(). If the host stops the
+ * request partway, what is left is inert: no code reads it once the plugin is gone.
  */
 
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
@@ -31,80 +23,59 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 
 global $wpdb;
 
-// Only ever run network-wide, because that is the only way this plugin can be
-// activated. base_prefix rather than prefix: our tables are shared by every site.
-$documents_table = $wpdb->base_prefix . 'equalify_iris_documents';
-$sightings_table = $wpdb->base_prefix . 'equalify_iris_sightings';
+/**
+ * @param string $prefix  The site's table prefix.
+ * @param string $basedir The site's uploads folder.
+ */
+$equalify_iris_clean_site = static function ( string $prefix, string $basedir ) use ( $wpdb ) {
+	// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$files = $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$prefix}postmeta WHERE meta_key = %s", '_equalify_iris_file' ) );
 
-// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-$wpdb->query( "DROP TABLE IF EXISTS {$sightings_table}" );
-$wpdb->query( "DROP TABLE IF EXISTS {$documents_table}" );
-// phpcs:enable
-
-// Every option this plugin ever wrote. Listed explicitly rather than matched with a
-// LIKE query, so it is obvious what is being removed and impossible to catch
-// somebody else's option by accident.
-$options = array(
-	'equalify_iris_api_url',
-	'equalify_iris_api_token',
-	'equalify_iris_auth_state',
-	'equalify_iris_deployment_login',
-	'equalify_iris_upstream_repo',
-	'equalify_iris_running',
-	'equalify_iris_auto_process',
-	'equalify_iris_max_in_flight',
-	'equalify_iris_uploads_per_tick',
-	'equalify_iris_status_checks_per_tick',
-	'equalify_iris_imports_per_tick',
-	'equalify_iris_posts_per_tick',
-	'equalify_iris_tick_budget_seconds',
-	'equalify_iris_max_file_bytes',
-	'equalify_iris_excluded_sites',
-	'equalify_iris_excluded_post_types',
-	'equalify_iris_sweep_cursor',
-	'equalify_iris_circuit_open_until',
-	'equalify_iris_consecutive_failures',
-	'equalify_iris_last_tick',
-	'equalify_iris_activity_log',
-	'equalify_iris_schema_version',
-	'equalify_iris_rewrite_token',
-	'equalify_iris_deactivated_at',
-
-	// Written by builds before the rewrite flush became per-site. A single
-	// network-wide flag could only ever flush one site's rules.
-	'equalify_iris_needs_rewrite_flush',
-
-	// Written by builds from before Iris v1 removed its sign-in, when the plugin
-	// held a GitHub token of its own. Nothing writes these any more, and they are
-	// listed here rather than dropped because the old one held a live credential:
-	// an install that was set up before the change still has it sitting in
-	// wp_sitemeta, and uninstall is the last chance to take it out.
-	'equalify_iris_token',
-	'equalify_iris_github_login',
-);
-
-foreach ( $options as $option ) {
-	delete_site_option( $option );
-
-	// Also as a normal option, in case the plugin was ever run on a single site
-	// during development. delete_option() on a key that does not exist is harmless.
-	delete_option( $option );
-}
-
-// One option really is per site: each site records which rewrite token it last
-// flushed for, in its own wp_options. The loop above only reached the site this
-// happens to be running on, so the rest need visiting.
-if ( function_exists( 'get_sites' ) ) {
-	foreach ( get_sites( array( 'fields' => 'ids', 'number' => 0 ) ) as $site_id ) {
-		switch_to_blog( (int) $site_id );
-		delete_option( 'equalify_iris_rewrite_token' );
-		restore_current_blog();
+	foreach ( $files as $file ) {
+		if ( '' !== $file && false === strpos( $file, '..' ) ) {
+			wp_delete_file( trailingslashit( $basedir ) . $file );
+		}
 	}
+
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$prefix}postmeta WHERE meta_key LIKE %s", $wpdb->esc_like( '_equalify_iris_' ) . '%' ) );
+
+	// Every option of ours on this site, including any left by 0.1.x.
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$prefix}options WHERE option_name LIKE %s", $wpdb->esc_like( 'equalify_iris_' ) . '%' ) );
+	// phpcs:enable
+};
+
+if ( is_multisite() ) {
+	// The uploads folder is the main site's plus `sites/<id>`, unless a site has
+	// its own. Worked out once, not per site.
+	$equalify_iris_main_uploads = wp_get_upload_dir()['basedir'];
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	$equalify_iris_sites = array_map( 'intval', $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT blog_id FROM {$wpdb->blogmeta} WHERE meta_key = %s", 'equalify_iris_used' ) ) );
+
+	foreach ( array_unique( array_merge( array( get_main_site_id() ), $equalify_iris_sites ) ) as $equalify_iris_site ) {
+		$equalify_iris_clean_site(
+			$wpdb->get_blog_prefix( $equalify_iris_site ),
+			is_main_site( $equalify_iris_site ) ? $equalify_iris_main_uploads : $equalify_iris_main_uploads . '/sites/' . $equalify_iris_site
+		);
+	}
+
+	// phpcs:disable WordPress.DB.DirectDatabaseQuery
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->blogmeta} WHERE meta_key LIKE %s", $wpdb->esc_like( 'equalify_iris_' ) . '%' ) );
+
+	// Every network setting, including those left by 0.1.x. One of those,
+	// `equalify_iris_token`, held a live GitHub credential in builds from before
+	// Iris removed its sign-in, so it must not outlive the plugin.
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sitemeta} WHERE meta_key LIKE %s", $wpdb->esc_like( 'equalify_iris_' ) . '%' ) );
+	// phpcs:enable
+} else {
+	$equalify_iris_clean_site( $wpdb->prefix, wp_get_upload_dir()['basedir'] );
 }
 
-// Also from before the sign-in was removed: a half-finished GitHub device flow.
-delete_site_transient( 'equalify_iris_device_flow' );
-delete_site_transient( 'equalify_iris_post_total' );
-delete_site_transient( 'equalify_iris_tick_lock' );
+wp_clear_scheduled_hook( 'equalify_iris_run' );
+wp_cache_flush();
 
-wp_clear_scheduled_hook( 'equalify_iris_tick' );
+// The tables 0.1.x kept its documents in.
+// phpcs:disable WordPress.DB.DirectDatabaseQuery
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->base_prefix}equalify_iris_sightings" );
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->base_prefix}equalify_iris_documents" );
+// phpcs:enable

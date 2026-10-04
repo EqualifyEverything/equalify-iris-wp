@@ -23,9 +23,9 @@
 #
 # THEN
 #
-#   Upload samples/oversized.pdf to a site, link it from a published page, and run
-#   ./tick.sh a few times. Expect status "too big" — with no Retry button, because
-#   retrying cannot help.
+#   Upload samples/oversized.pdf to a site, link it from a published page, choose
+#   "Send to Iris for Tagging" on the Equalify Iris screen, and run ./tick.sh. Expect
+#   "Could not be tagged" with the file's size, and no upload.
 
 set -euo pipefail
 

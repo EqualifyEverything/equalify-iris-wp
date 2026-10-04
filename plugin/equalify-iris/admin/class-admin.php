@@ -2,39 +2,27 @@
 /**
  * WHAT IS THIS FILE?
  *
- * The Network Admin interface: the menu, the four screens, and every button.
+ * The Equalify Iris screens, and the notice that sends a site admin to them.
  *
- * WHY DOES IT EXIST?
+ *   Network Admin → Equalify Iris   (super admins)
+ *     Where Iris lives, its token if it needs one, a switch that tags every
+ *     site's PDFs automatically, whether the background job is keeping up, and
+ *     every site's progress, with a way into each site's list and a button to
+ *     tag a site's PDFs.
  *
- * Because a super admin needs to be able to start the process, stop it, see how it
- * is going, and find out why it is not going. Nothing else. There is no per-site
- * screen and no per-file control anywhere in this plugin — the whole thing is
- * operated from one place by one kind of person.
+ *   Equalify Iris                   (each site's admins)
+ *     Whether this site's PDFs are tagged automatically, and the list of PDFs
+ *     visitors can reach from its published content, each of which can be
+ *     tagged, viewed or have its tagged copy deleted. With the network switch
+ *     on, the site switch is not shown: a super admin has already decided.
  *
- * WHERE THE SCREENS LIVE
+ * A site's content is only read once someone opens its screen, tags a PDF, or
+ * turns on automatic tagging, so the sites of a large network that nobody
+ * looks at cost nothing.
  *
- * Network Admin → Equalify Iris
- *   Overview   Start, stop, and how it is going.
- *   Documents  Every PDF we know about and what happened to it.
- *   Settings   The connection, and the resource limits.
- *   Log        What happened recently, in sentences.
- *
- * TWO RULES THAT EVERY ACTION IN THIS FILE FOLLOWS
- *
- * 1. `manage_network_options` is checked on every single action. That is the
- *    capability only super admins have. Checking it once when drawing the menu is
- *    not enough — anyone can send a POST request to an admin URL without ever
- *    seeing the menu.
- *
- * 2. Every action carries a nonce, and every action verifies it. A nonce proves the
- *    request came from a form we drew, not from a link in an email that happens to
- *    stop the whole network's processing.
- *
- * POST-REDIRECT-GET
- *
- * Actions never draw a page. They do the work, then redirect back with a short
- * message code in the URL. That means refreshing the page after pressing a button
- * cannot repeat the action, and the browser's back button behaves normally.
+ * Forms and links post to admin-post.php and network/edit.php, with a nonce and a
+ * capability check each, and redirect back with a short code saying what
+ * happened.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -43,798 +31,702 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Equalify_Iris_Admin {
 
-	/** The capability required for everything in this file. */
-	const CAPABILITY = 'manage_network_options';
-
-	/** The one nonce action name used by every form. */
-	const NONCE = 'equalify_iris_admin';
-
-	/** The top-level menu slug, which is also the Overview screen. */
 	const SLUG = 'equalify-iris';
 
-	private Equalify_Iris_Plugin $plugin;
+	/** Sites per page on the network screen. */
+	const SITES_PER_PAGE = 50;
+
+	public static function init(): void {
+		add_action( 'admin_menu', array( __CLASS__, 'add_site_page' ) );
+		add_action( 'network_admin_menu', array( __CLASS__, 'add_network_page' ) );
+
+		add_action( 'admin_post_equalify_iris_save_site', array( __CLASS__, 'save_site' ) );
+		add_action( 'admin_post_equalify_iris_tag', array( __CLASS__, 'handle_tag' ) );
+		add_action( 'admin_post_equalify_iris_remove', array( __CLASS__, 'handle_remove' ) );
+		add_action( 'admin_post_equalify_iris_tag_all', array( __CLASS__, 'handle_tag_all' ) );
+		add_action( 'network_admin_edit_equalify_iris_save_network', array( __CLASS__, 'save_network' ) );
+		add_action( 'network_admin_edit_equalify_iris_tag_site', array( __CLASS__, 'handle_tag_site' ) );
+		add_action( 'network_admin_edit_equalify_iris_read_site', array( __CLASS__, 'handle_read_site' ) );
+
+		add_action( 'admin_notices', array( __CLASS__, 'untagged_notice' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'result_notice' ) );
+		add_action( 'network_admin_notices', array( __CLASS__, 'result_notice' ) );
+	}
+
+	/** A site's Equalify Iris screen: the current site's, or another's. */
+	public static function site_page_url( int $site_id = 0 ): string {
+		return $site_id
+			? get_admin_url( $site_id, 'admin.php?page=' . self::SLUG )
+			: admin_url( 'admin.php?page=' . self::SLUG );
+	}
+
+	/** A count on the network screen, linked to that site's list showing just those PDFs. */
+	private static function count_link( int $count, int $site_id, string $filter, string $site_name ): string {
+		if ( ! $count ) {
+			return esc_html( number_format_i18n( 0 ) );
+		}
+
+		return sprintf(
+			'<a href="%s">%s<span class="screen-reader-text"> %s</span></a>',
+			esc_url( add_query_arg( Equalify_Iris_List_Table::FILTER, $filter, self::site_page_url( $site_id ) ) ),
+			esc_html( number_format_i18n( $count ) ),
+			/* translators: 1: a status such as "Could not be tagged", 2: a site's name. */
+			esc_html( sprintf( __( '%1$s on %2$s', 'equalify-iris' ), Equalify_Iris_List_Table::filters()[ $filter ][0], $site_name ) )
+		);
+	}
+
+	public static function network_page_url(): string {
+		return network_admin_url( 'admin.php?page=' . self::SLUG );
+	}
+
+	/** Send the browser back with a code result_notice() turns into a sentence. */
+	public static function redirect( string $url, string $notice ): void {
+		wp_safe_redirect( add_query_arg( 'equalify-iris', $notice, $url ) );
+		exit;
+	}
+
+	// -----------------------------------------------------------------------
+	// Notices
+	// -----------------------------------------------------------------------
 
 	/**
-	 * How many documents the action just finished with actually changed.
+	 * Tell a site admin when visitors are getting untagged PDFs.
 	 *
-	 * Held here rather than returned because every handler returns a message code, and
-	 * a bulk action needs to say both which message and how many. The count travels in
-	 * the redirect as a number, never as text — see notice().
+	 * Only when automatic tagging is off and a published page links to a PDF with
+	 * no tagged copy, and not on the Equalify Iris screen, which already says so.
+	 * The answer is kept for a few minutes: this runs on every admin page.
 	 */
-	private int $affected = 0;
-
-	public function __construct( Equalify_Iris_Plugin $plugin ) {
-		$this->plugin = $plugin;
-	}
-
-	public function init(): void {
-		add_action( 'network_admin_menu', array( $this, 'add_menu' ) );
-		add_action( 'admin_post_equalify_iris_action', array( $this, 'handle_action' ) );
-		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_styles' ) );
-	}
-
-	/**
-	 * Add the menu, in Network Admin only.
-	 *
-	 * `network_admin_menu` rather than `admin_menu` is the whole reason this appears
-	 * where it does. Using `admin_menu` would put it on every site's dashboard, which
-	 * is exactly what we do not want.
-	 */
-	public function add_menu(): void {
-		$overview = add_menu_page(
-			__( 'Equalify Iris', 'equalify-iris' ),
-			__( 'Equalify Iris', 'equalify-iris' ),
-			self::CAPABILITY,
-			self::SLUG,
-			array( $this, 'render_overview' ),
-			'dashicons-universal-access-alt',
-			30
-		);
-
-		add_submenu_page(
-			self::SLUG,
-			__( 'Overview', 'equalify-iris' ),
-			__( 'Overview', 'equalify-iris' ),
-			self::CAPABILITY,
-			self::SLUG,
-			array( $this, 'render_overview' )
-		);
-
-		add_submenu_page(
-			self::SLUG,
-			__( 'Documents', 'equalify-iris' ),
-			__( 'Documents', 'equalify-iris' ),
-			self::CAPABILITY,
-			self::SLUG . '-documents',
-			array( $this, 'render_documents' )
-		);
-
-		add_submenu_page(
-			self::SLUG,
-			__( 'Settings', 'equalify-iris' ),
-			__( 'Settings', 'equalify-iris' ),
-			self::CAPABILITY,
-			self::SLUG . '-settings',
-			array( $this, 'render_settings' )
-		);
-
-		add_submenu_page(
-			self::SLUG,
-			__( 'Activity Log', 'equalify-iris' ),
-			__( 'Activity Log', 'equalify-iris' ),
-			self::CAPABILITY,
-			self::SLUG . '-log',
-			array( $this, 'render_log' )
-		);
-
-		unset( $overview );
-	}
-
-	/** Load the admin stylesheet on our screens only. */
-	public function enqueue_styles( string $hook ): void {
-		if ( false === strpos( $hook, self::SLUG ) ) {
+	public static function untagged_notice(): void {
+		if ( ! current_user_can( 'manage_options' ) || Equalify_Iris_Settings::auto_enabled() ) {
 			return;
 		}
 
-		wp_enqueue_style(
-			'equalify-iris-admin',
-			EQUALIFY_IRIS_URL . 'assets/css/admin.css',
-			array(),
-			EQUALIFY_IRIS_VERSION
-		);
-	}
+		$screen = get_current_screen();
 
-	// -----------------------------------------------------------------------
-	// Screens
-	// -----------------------------------------------------------------------
-
-	public function render_overview(): void {
-		$this->guard();
-		( new Equalify_Iris_Admin_Overview( $this->plugin ) )->render();
-	}
-
-	public function render_documents(): void {
-		$this->guard();
-		( new Equalify_Iris_Admin_Documents() )->render();
-	}
-
-	public function render_settings(): void {
-		$this->guard();
-		( new Equalify_Iris_Admin_Settings() )->render();
-	}
-
-	public function render_log(): void {
-		$this->guard();
-		( new Equalify_Iris_Admin_Log() )->render();
-	}
-
-	/** Refuse to draw anything for someone who should not see it. */
-	private function guard(): void {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You do not have permission to manage Equalify Iris.', 'equalify-iris' ) );
-		}
-	}
-
-	// -----------------------------------------------------------------------
-	// Buttons
-	// -----------------------------------------------------------------------
-
-	/**
-	 * Every button on every screen arrives here.
-	 *
-	 * One handler rather than one per action, so the permission check and the nonce
-	 * check are written once and cannot be forgotten on a new button.
-	 */
-	public function handle_action(): void {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You do not have permission to manage Equalify Iris.', 'equalify-iris' ) );
+		if ( $screen && 'toplevel_page_' . self::SLUG === $screen->id ) {
+			return;
 		}
 
-		check_admin_referer( self::NONCE );
-
-		$action = isset( $_POST['equalify_iris_action'] ) ? sanitize_key( wp_unslash( $_POST['equalify_iris_action'] ) ) : '';
-		$screen = isset( $_POST['equalify_iris_screen'] ) ? sanitize_key( wp_unslash( $_POST['equalify_iris_screen'] ) ) : self::SLUG;
-
-		$notice = '';
-
-		switch ( $action ) {
-			case 'start':
-				$notice = $this->do_start();
-				break;
-
-			case 'stop':
-				Equalify_Iris_Settings::set( 'running', false );
-				Equalify_Iris_Logger::log( __( 'A super admin turned processing off.', 'equalify-iris' ) );
-				$notice = 'stopped';
-				break;
-
-			case 'run_now':
-				$this->plugin->scheduler->run_now();
-				$notice = 'ran';
-				break;
-
-			case 'restart_search':
-				Equalify_Iris_Sweeper::reset();
-				Equalify_Iris_Logger::log( __( 'A super admin restarted the search for existing PDFs.', 'equalify-iris' ) );
-				$notice = 'search_restarted';
-				break;
-
-			case 'check_connection':
-				$notice = $this->do_check_connection();
-				break;
-
-			case 'save_api_token':
-				$notice = $this->do_save_api_token();
-				break;
-
-			case 'forget_api_token':
-				Equalify_Iris_Settings::forget_api_token();
-				Equalify_Iris_Logger::log( __( 'A super admin removed the stored Equalify Iris API token.', 'equalify-iris' ) );
-				$notice = 'token_forgotten';
-				break;
-
-			case 'save_settings':
-				$notice = $this->do_save_settings();
-				break;
-
-			case 'retry_all_failed':
-				$notice = $this->do_retry_all_failed();
-				break;
-
-			case 'bulk_action':
-				$notice = $this->do_bulk_action( $screen );
-				break;
-
-			case 'delete_page':
-				$notice = $this->do_delete_pages();
-				break;
-
-			case 'exclude':
-				$notice = $this->do_exclude();
-				break;
-
-			case 'include':
-				$notice = $this->do_include();
-				break;
-
-			case 'clear_log':
-				Equalify_Iris_Logger::clear();
-				$notice = 'log_cleared';
-				break;
-
-			default:
-				$notice = 'unknown';
-				break;
+		if ( ! Equalify_Iris_Discovery::indexed() ) {
+			return;
 		}
 
-		$this->redirect_back( $screen, $notice );
-	}
+		$untagged = wp_cache_get( 'untagged', 'equalify_iris' );
 
-	/** Turn processing on, refusing only if Iris is actually shutting us out. */
-	private function do_start(): string {
-		if ( Equalify_Iris_Settings::blocked_by_auth() ) {
-			return 'needs_token';
+		if ( false === $untagged ) {
+			$untagged = Equalify_Iris_Discovery::find( 'untagged', 1 ) ? 1 : 0;
+			wp_cache_set( 'untagged', $untagged, 'equalify_iris', 5 * MINUTE_IN_SECONDS );
 		}
 
-		if ( ! Equalify_Iris_Database::tables_exist() ) {
-			Equalify_Iris_Database::install();
+		if ( ! $untagged ) {
+			return;
 		}
 
-		Equalify_Iris_Settings::set( 'running', true );
-		Equalify_Iris_Scheduler::schedule();
-
-		Equalify_Iris_Logger::log( __( 'A super admin turned processing on.', 'equalify-iris' ) );
-
-		return 'started';
-	}
-
-	/**
-	 * Ask Iris whether it will accept us, and remember the answer.
-	 *
-	 * This is what the old two-step GitHub sign-in collapsed into. There is nothing
-	 * to approve in a browser any more: one request either comes back 200, in which
-	 * case we are usable, or 401, in which case handle() has already worked out
-	 * which of the two kinds of 401 it was and said so in the log.
-	 */
-	private function do_check_connection(): string {
-		$result = Equalify_Iris_API_Client::check_connection();
-
-		if ( is_wp_error( $result ) ) {
-			// Not logged here: handle() logs a 401 with the distinction intact, and
-			// logging again would put two sentences about one event in the log.
-			return 'equalify_iris_needs_token' === $result->get_error_code()
-				? 'needs_token'
-				: 'check_failed';
-		}
-
-		Equalify_Iris_Logger::log(
+		printf(
+			'<div class="notice notice-warning"><p>%s</p></div>',
 			sprintf(
-				/* translators: 1: open or closed, 2: a GitHub repository URL. */
-				__( 'Checked Equalify Iris: the deployment is %1$s and files contributions to %2$s.', 'equalify-iris' ),
-				'gated' === $result['mode'] ? __( 'closed, and accepted our token', 'equalify-iris' ) : __( 'open', 'equalify-iris' ),
-				$result['upstream_repo'] ?: __( 'an unnamed repository', 'equalify-iris' )
+				/* translators: %s: a link to the Equalify Iris settings screen. */
+				esc_html__( 'You are currently displaying inaccessible PDFs. Visit %s to turn on automatic PDF tagging.', 'equalify-iris' ),
+				'<a href="' . esc_url( self::site_page_url() ) . '">' . esc_html__( 'Equalify Iris settings', 'equalify-iris' ) . '</a>'
 			)
 		);
-
-		return 'check_ok';
 	}
 
-	/**
-	 * Store the shared secret for a closed deployment, then immediately test it.
-	 *
-	 * Testing straight away is the point. A secret that is wrong is indistinguishable
-	 * from one that is right until something uses it, and the next thing to use it
-	 * would otherwise be a background tick nobody is watching.
-	 */
-	private function do_save_api_token(): string {
-		$post = wp_unslash( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-
-		$token = isset( $post['api_token'] ) ? trim( (string) $post['api_token'] ) : '';
-
-		Equalify_Iris_Settings::set( 'api_token', $token );
-
-		// A new secret makes any previous refusal meaningless, so clear it before
-		// testing — otherwise a correct token would be saved while the worker stayed
-		// blocked by the verdict on the old one.
-		Equalify_Iris_Settings::set_auth_state( Equalify_Iris_Settings::AUTH_UNKNOWN );
-
-		Equalify_Iris_Logger::log( __( 'A super admin saved an Equalify Iris API token.', 'equalify-iris' ) );
-
-		return $this->do_check_connection();
-	}
-
-	/**
-	 * Save the settings form.
-	 *
-	 * Every number is clamped to a range rather than trusted. The limits here are
-	 * the difference between a plugin a host tolerates and one they block, so a
-	 * typed zero or a pasted 100000 must not become the live setting.
-	 */
-	private function do_save_settings(): string {
-		$post = wp_unslash( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-
-		$numbers = array(
-			// key                    min  max
-			'max_in_flight'         => array( 1, 10 ),
-			'uploads_per_tick'      => array( 1, 10 ),
-			'status_checks_per_tick' => array( 1, 50 ),
-			'imports_per_tick'      => array( 1, 10 ),
-			'posts_per_tick'        => array( 1, 200 ),
-			'tick_budget_seconds'   => array( 5, 120 ),
-		);
-
-		foreach ( $numbers as $key => $range ) {
-			if ( ! isset( $post[ $key ] ) ) {
-				continue;
-			}
-
-			$value = (int) $post[ $key ];
-			$value = max( $range[0], min( $range[1], $value ) );
-
-			Equalify_Iris_Settings::set( $key, $value );
-		}
-
-		// An unchecked checkbox sends nothing at all, so "absent" and "off" look
-		// identical. Without the marker below, saving the limits form — which has no
-		// checkbox on it — would read auto_process as off and quietly stop the plugin
-		// noticing new PDFs. The marker says "this form had that checkbox on it".
-		if ( ! empty( $post['has_auto_process'] ) ) {
-			Equalify_Iris_Settings::set( 'auto_process', ! empty( $post['auto_process'] ) );
-		}
-
-		if ( isset( $post['api_url'] ) ) {
-			$url = esc_url_raw( trim( (string) $post['api_url'] ) );
-
-			if ( $url ) {
-				Equalify_Iris_Settings::set( 'api_url', untrailingslashit( $url ) );
-			}
-		}
-
-		// Excluded sites arrive as a comma-separated list of ids, because a
-		// multi-select of 200 sites is unusable and a checkbox per site is worse.
-		if ( isset( $post['excluded_sites'] ) ) {
-			$ids = array_filter( array_map( 'intval', preg_split( '#[^0-9]+#', (string) $post['excluded_sites'] ) ?: array() ) );
-
-			Equalify_Iris_Settings::set( 'excluded_sites', array_values( array_unique( $ids ) ) );
-		}
-
-		if ( isset( $post['excluded_post_types'] ) ) {
-			$types = array_filter( array_map( 'sanitize_key', preg_split( '#[\s,]+#', (string) $post['excluded_post_types'] ) ?: array() ) );
-
-			Equalify_Iris_Settings::set( 'excluded_post_types', array_values( array_unique( $types ) ) );
-		}
-
-		return 'settings_saved';
-	}
-
-	/** Retry every failed document. */
-	private function do_retry_all_failed(): string {
-		$failed = Equalify_Iris_Documents::query(
-			array(
-				'status'   => Equalify_Iris_Documents::FAILED,
-				'per_page' => 1000,
-			)
-		);
-
-		foreach ( $failed['items'] as $document ) {
-			Equalify_Iris_Documents::retry( (int) $document->id );
-			++$this->affected;
-		}
-
-		return 'retried_all';
-	}
-
-	/**
-	 * Carry out whatever the bulk action bar was set to, on the ticked documents.
-	 *
-	 * The harmless action happens immediately. The two destructive ones do not: they
-	 * send the admin to a confirmation panel first, which is why this can end in a
-	 * redirect rather than a notice code.
-	 */
-	private function do_bulk_action( string $screen ): string {
-		$choice = isset( $_POST['bulk_action'] ) ? sanitize_key( wp_unslash( $_POST['bulk_action'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-
-		if ( '' === $choice || ! isset( Equalify_Iris_Admin_Documents::bulk_actions()[ $choice ] ) ) {
-			return 'no_action_chosen';
-		}
-
-		$documents = $this->posted_documents();
-
-		if ( ! $documents ) {
-			return 'nothing_ticked';
-		}
-
-		switch ( $choice ) {
-			case 'retry':
-				return $this->do_retry( $documents );
-
-			case 'include':
-				return $this->do_include();
-
-			case 'delete':
-			case 'exclude':
-				// Never destructive on this request. All this does is show the panel
-				// that asks, which is itself a form that posts the real action.
-				$this->redirect_to_confirm( $screen, $choice, $documents );
-		}
-
-		return 'unknown';
-	}
-
-	/**
-	 * Put documents back in the queue.
-	 *
-	 * Excluded documents are skipped, and this is the reason the check is here rather
-	 * than in Documents::retry(): retry() is the ordinary way back into the queue and
-	 * has no business knowing about exclusions, but a bulk retry over a filtered list
-	 * that happens to include an excluded PDF must not quietly undo the exclusion. An
-	 * exclusion is undone on purpose, with "Convert after all", or not at all.
-	 *
-	 * @param array<object> $documents
-	 */
-	private function do_retry( array $documents ): string {
-		$retried = array();
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::EXCLUDED === (string) $document->status ) {
-				continue;
-			}
-
-			Equalify_Iris_Documents::retry( (int) $document->id );
-
-			$retried[] = $document;
-			++$this->affected;
-		}
-
-		if ( ! $retried ) {
-			return 'all_excluded';
-		}
-
-		$this->log_bulk(
-			$retried,
-			/* translators: %s: a PDF's name. */
-			__( 'A super admin put %s back in the queue.', 'equalify-iris' ),
-			/* translators: %d: how many PDFs. */
-			__( 'A super admin put %d PDFs back in the queue.', 'equalify-iris' )
-		);
-
-		return 'retried';
-	}
-
-	/** Send the admin to the "are you sure?" panel on the Documents screen. */
-	private function redirect_to_confirm( string $screen, string $action, array $documents ): void {
-		$ids = array();
-
-		foreach ( $documents as $document ) {
-			$ids[] = (int) $document->id;
-		}
-
-		wp_safe_redirect(
-			add_query_arg(
-				array(
-					'page'      => $screen,
-					'confirm'   => $action,
-					'documents' => implode( ',', $ids ),
-				),
-				network_admin_url( 'admin.php' )
-			)
-		);
-
-		exit;
-	}
-
-	/**
-	 * Delete pages. The PDFs go back in the queue and are converted again.
-	 */
-	private function do_delete_pages(): string {
-		$documents = $this->posted_documents();
-
-		if ( ! $documents ) {
-			return 'unknown';
-		}
-
-		$deleted = array();
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::delete_page( (int) $document->id ) ) {
-				$deleted[] = $document;
-				++$this->affected;
-			}
-		}
-
-		if ( ! $deleted ) {
-			return 'unknown';
-		}
-
-		$this->log_bulk(
-			$deleted,
-			/* translators: %s: a PDF's name. */
-			__( 'A super admin deleted the accessible version of %s. It is back in the queue to be converted again.', 'equalify-iris' ),
-			/* translators: %d: how many PDFs. */
-			__( 'A super admin deleted the accessible version of %d PDFs. They are back in the queue to be converted again.', 'equalify-iris' )
-		);
-
-		return 'page_deleted';
-	}
-
-	/** Stop converting these PDFs, and delete their pages. */
-	private function do_exclude(): string {
-		$documents = $this->posted_documents();
-
-		if ( ! $documents ) {
-			return 'unknown';
-		}
-
-		$reason   = isset( $_POST['reason'] ) ? sanitize_text_field( wp_unslash( $_POST['reason'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-		$tail     = '' !== $reason ? ': ' . $reason : '.';
-		$excluded = array();
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::exclude( (int) $document->id, $reason ) ) {
-				$excluded[] = $document;
-				++$this->affected;
-			}
-		}
-
-		if ( ! $excluded ) {
-			return 'unknown';
-		}
-
-		$this->log_bulk(
-			$excluded,
-			/* translators: 1: a PDF's name, 2: the reason given, or a full stop. */
-			__( 'A super admin excluded %1$s. Its accessible version was deleted and it will not be converted again%2$s', 'equalify-iris' ),
-			/* translators: 1: how many PDFs, 2: the reason given, or a full stop. */
-			__( 'A super admin excluded %1$d PDFs. Their accessible versions were deleted and they will not be converted again%2$s', 'equalify-iris' ),
-			$tail
-		);
-
-		return 'excluded';
-	}
-
-	/** Undo an exclusion. */
-	private function do_include(): string {
-		$documents = $this->posted_documents();
-
-		if ( ! $documents ) {
-			return 'unknown';
-		}
-
-		$included = array();
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::include_again( (int) $document->id ) ) {
-				$included[] = $document;
-				++$this->affected;
-			}
-		}
-
-		if ( ! $included ) {
-			return 'not_excluded';
-		}
-
-		$this->log_bulk(
-			$included,
-			/* translators: %s: a PDF's name. */
-			__( 'A super admin un-excluded %s. It is back in the queue to be converted.', 'equalify-iris' ),
-			/* translators: %d: how many PDFs. */
-			__( 'A super admin un-excluded %d PDFs. They are back in the queue to be converted.', 'equalify-iris' )
-		);
-
-		return 'included';
-	}
-
-	/**
-	 * Write one log entry per document, or one for the lot.
-	 *
-	 * The activity log is meant to be read as sentences, and fifty sentences that
-	 * differ only in a file name is not something anybody reads — it just buries
-	 * whatever happened before it. So a handful is logged in full, and a bulk run gets
-	 * one line with a count. Either way the log says what changed.
-	 *
-	 * @param array<object> $documents
-	 * @param string        $one       A format string taking the document's name, then $extra.
-	 * @param string        $many      A format string taking a count, then $extra.
-	 * @param string        $extra     A tail both forms end with, such as a reason.
-	 */
-	private function log_bulk( array $documents, string $one, string $many, string $extra = '' ): void {
-		if ( count( $documents ) > 5 ) {
-			Equalify_Iris_Logger::log( sprintf( $many, count( $documents ), $extra ) );
-
-			return;
-		}
-
-		foreach ( $documents as $document ) {
-			Equalify_Iris_Logger::log( sprintf( $one, Equalify_Iris_Documents::display_name( $document ), $extra ) );
-		}
-	}
-
-	/**
-	 * The documents the posted form was about.
-	 *
-	 * Unknown ids are dropped rather than refused: between ticking a box and pressing
-	 * Apply, another admin may have purged one, and failing the whole batch over a row
-	 * that no longer exists helps nobody. The count in the notice afterwards is of what
-	 * actually changed, so nothing is claimed that did not happen.
-	 *
-	 * @return array<object>
-	 */
-	private function posted_documents(): array {
-		// phpcs:ignore WordPress.Security.NonceVerification -- checked in handle_action().
-		$raw = isset( $_POST['documents'] ) ? wp_unslash( $_POST['documents'] ) : array();
-
-		if ( ! is_array( $raw ) ) {
-			$raw = array( $raw );
-		}
-
-		// One screen of rows is fifty, so anything past a couple of hundred is not a
-		// form this plugin drew.
-		$raw = array_slice( $raw, 0, 200 );
-
-		$documents = array();
-
-		foreach ( array_unique( array_map( 'intval', $raw ) ) as $id ) {
-			$document = $id ? Equalify_Iris_Documents::find( $id ) : null;
-
-			if ( $document ) {
-				$documents[] = $document;
-			}
-		}
-
-		return $documents;
-	}
-
-	/** Go back to the screen the button was on, carrying a message code. */
-	private function redirect_back( string $screen, string $notice ): void {
-		$url = add_query_arg(
-			array(
-				'page'                 => $screen,
-				'equalify_iris_notice' => $notice,
-				'equalify_iris_count'  => $this->affected ?: null,
-			),
-			network_admin_url( 'admin.php' )
-		);
-
-		wp_safe_redirect( $url );
-		exit;
-	}
-
-	// -----------------------------------------------------------------------
-	// Shared pieces the screens use
-	// -----------------------------------------------------------------------
-
-	/**
-	 * Print the tab bar.
-	 */
-	public static function tabs( string $current ): void {
-		$tabs = array(
-			self::SLUG              => __( 'Overview', 'equalify-iris' ),
-			self::SLUG . '-documents' => __( 'Documents', 'equalify-iris' ),
-			self::SLUG . '-settings' => __( 'Settings', 'equalify-iris' ),
-			self::SLUG . '-log'     => __( 'Activity Log', 'equalify-iris' ),
-		);
-
-		echo '<nav class="nav-tab-wrapper" aria-label="' . esc_attr__( 'Equalify Iris screens', 'equalify-iris' ) . '">';
-
-		foreach ( $tabs as $slug => $label ) {
-			printf(
-				'<a href="%s" class="nav-tab%s"%s>%s</a>',
-				esc_url( network_admin_url( 'admin.php?page=' . $slug ) ),
-				$slug === $current ? ' nav-tab-active' : '',
-				$slug === $current ? ' aria-current="page"' : '',
-				esc_html( $label )
-			);
-		}
-
-		echo '</nav>';
-	}
-
-	/**
-	 * Print the message left by the last button press.
-	 *
-	 * WHY A LOOKUP TABLE AND NOT THE MESSAGE IN THE URL?
-	 *
-	 * Because anything in a URL can be edited. Putting the text in the URL would let
-	 * anyone send a super admin a link that displays whatever official-looking
-	 * message they liked inside the WordPress dashboard.
-	 *
-	 * The count that goes with a bulk action is the one thing that does travel in the
-	 * URL, and it is safe for the same reason: it is cast to an integer, so the worst
-	 * anybody can do with it is make a true sentence say the wrong number.
-	 */
-	public static function notice(): void {
-		// phpcs:disable WordPress.Security.NonceVerification -- read-only display of a fixed message.
-		$code  = isset( $_GET['equalify_iris_notice'] ) ? sanitize_key( wp_unslash( $_GET['equalify_iris_notice'] ) ) : '';
-		$count = isset( $_GET['equalify_iris_count'] ) ? max( 1, (int) $_GET['equalify_iris_count'] ) : 1;
-		// phpcs:enable
-
-		if ( ! $code ) {
-			return;
-		}
-
-		// The messages that say how many. Kept apart from the fixed ones because these
-		// need a plural form, and English is not the only language with more than two.
-		$counted = array(
-			'retried'      => _n( '%s PDF is back in the queue.', '%s PDFs are back in the queue.', $count, 'equalify-iris' ),
-			'retried_all'  => _n( '%s failed PDF is back in the queue.', '%s failed PDFs are back in the queue.', $count, 'equalify-iris' ),
-			'page_deleted' => _n(
-				'Deleted %s page. That PDF is back in the queue, so it will be converted again — use “Delete it and never convert again” if it should stay gone.',
-				'Deleted %s pages. Those PDFs are back in the queue, so they will be converted again — use “Delete it and never convert again” if they should stay gone.',
-				$count,
-				'equalify-iris'
-			),
-			'excluded'     => _n( 'Deleted %s page. That PDF will not be converted again.', 'Deleted %s pages. Those PDFs will not be converted again.', $count, 'equalify-iris' ),
-			'included'     => _n( '%s PDF is back in the queue and will be converted.', '%s PDFs are back in the queue and will be converted.', $count, 'equalify-iris' ),
-		);
-
-		if ( isset( $counted[ $code ] ) ) {
-			printf(
-				'<div class="notice notice-success is-dismissible"><p>%s</p></div>',
-				esc_html( sprintf( $counted[ $code ], number_format_i18n( $count ) ) )
-			);
-
-			return;
-		}
+	/** Say what the last action did. */
+	public static function result_notice(): void {
+		$code = isset( $_GET['equalify-iris'] ) ? sanitize_key( wp_unslash( $_GET['equalify-iris'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
 
 		$messages = array(
-			'started'           => array( 'success', __( 'Processing is on. The first batch runs within five minutes.', 'equalify-iris' ) ),
-			'stopped'           => array( 'success', __( 'Processing is off. Nothing has been lost — documents already with Equalify Iris will be collected when you start again.', 'equalify-iris' ) ),
-			'ran'               => array( 'success', __( 'Ran one batch. See the activity log for what it did.', 'equalify-iris' ) ),
-			'search_restarted'  => array( 'success', __( 'The search for existing PDFs will start again from the first site.', 'equalify-iris' ) ),
-			'check_ok'          => array( 'success', __( 'Equalify Iris will accept us. Details are below and in the activity log.', 'equalify-iris' ) ),
-			'check_failed'      => array( 'error', __( 'Could not check Equalify Iris. The activity log has the reason.', 'equalify-iris' ) ),
-			'needs_token'       => array( 'error', __( 'This Equalify Iris deployment is closed and needs a shared API token. Ask whoever runs it for the token, then enter it below.', 'equalify-iris' ) ),
-			'token_forgotten'   => array( 'success', __( 'The stored API token has been removed.', 'equalify-iris' ) ),
-			'settings_saved'    => array( 'success', __( 'Settings saved.', 'equalify-iris' ) ),
-			'not_excluded'      => array( 'error', __( 'None of those PDFs was excluded, so there was nothing to undo. Nothing has been changed.', 'equalify-iris' ) ),
-			'all_excluded'      => array( 'error', __( 'Every PDF you ticked is excluded. Use “Convert after all” to bring one back. Nothing has been changed.', 'equalify-iris' ) ),
-			'no_action_chosen'  => array( 'error', __( 'Choose an action from the dropdown above the table. Nothing has been changed.', 'equalify-iris' ) ),
-			'nothing_ticked'    => array( 'error', __( 'Tick the PDFs you want to act on first. Nothing has been changed.', 'equalify-iris' ) ),
-			'log_cleared'       => array( 'success', __( 'Activity log cleared.', 'equalify-iris' ) ),
-			'unknown'           => array( 'error', __( 'That did not work. Nothing has been changed.', 'equalify-iris' ) ),
+			'saved'      => array( 'success', __( 'Settings saved.', 'equalify-iris' ) ),
+			'connected'  => array( 'success', __( 'Connected. This Equalify Iris deployment can tag PDFs.', 'equalify-iris' ) ),
+			'queued'     => array( 'success', __( 'Equalify Iris will add accessibility tags to this PDF. It usually takes a few minutes; links switch to the tagged version once it is ready.', 'equalify-iris' ) ),
+			'queued-all' => array( 'success', __( 'Equalify Iris will add accessibility tags to these PDFs. It usually takes a few minutes each.', 'equalify-iris' ) ),
+			'removed'    => array( 'success', __( 'The Iris-tagged version was deleted. Links point at the original PDF again.', 'equalify-iris' ) ),
+			'reading'    => array( 'success', __( 'Equalify Iris will look for PDFs on this site in the next few minutes.', 'equalify-iris' ) ),
+			'not-public' => array( 'error', __( 'Only PDFs that visitors can reach from this site’s published content can be sent to Iris.', 'equalify-iris' ) ),
 		);
 
-		if ( ! isset( $messages[ $code ] ) ) {
+		if ( 'check-failed' === $code ) {
+			$check = get_site_transient( 'equalify_iris_check' );
+			$text  = is_string( $check ) ? $check : __( 'Could not connect to Equalify Iris.', 'equalify-iris' );
+
+			printf( '<div class="notice notice-error is-dismissible"><p>%s</p></div>', esc_html( $text ) );
 			return;
 		}
 
-		printf(
-			'<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
-			esc_attr( $messages[ $code ][0] ),
-			esc_html( $messages[ $code ][1] )
+		if ( isset( $messages[ $code ] ) ) {
+			printf(
+				'<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
+				esc_attr( $messages[ $code ][0] ),
+				esc_html( $messages[ $code ][1] )
+			);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// The site screen
+	// -----------------------------------------------------------------------
+
+	public static function add_site_page(): void {
+		$hook = add_menu_page(
+			__( 'Equalify Iris', 'equalify-iris' ),
+			__( 'Equalify Iris', 'equalify-iris' ),
+			'manage_options',
+			self::SLUG,
+			array( __CLASS__, 'render_site_page' ),
+			'dashicons-media-document',
+			81
+		);
+
+		add_action( 'load-' . $hook, array( __CLASS__, 'handle_bulk' ) );
+	}
+
+	public static function render_site_page(): void {
+		// Opening the screen is what starts a site reading its content.
+		if ( ! Equalify_Iris_Discovery::indexed() ) {
+			Equalify_Iris_Runner::wake();
+		}
+
+		$table = new Equalify_Iris_List_Table();
+		$table->prepare_items();
+
+		$untagged = Equalify_Iris_Discovery::count( 'untagged' );
+		$working  = Equalify_Iris_Discovery::count( 'listed', array( Equalify_Iris_Tagger::QUEUED, Equalify_Iris_Tagger::WORKING ) );
+		$last_run = Equalify_Iris_Runner::last_run();
+		?>
+		<div class="wrap">
+			<h1><?php esc_html_e( 'Equalify Iris', 'equalify-iris' ); ?></h1>
+
+			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from this site’s published pages, posts, menus and widgets, so screen readers can read them in order, with headings, lists and tables. The original file is kept; links on this site point at the tagged copy instead. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
+
+			<?php if ( ! Equalify_Iris_Settings::auto_enabled() && $untagged ) : ?>
+				<div class="notice notice-warning inline"><p><?php esc_html_e( 'You are currently displaying inaccessible PDFs. Turn on automatic PDF tagging below, or tag them one by one.', 'equalify-iris' ); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ( Equalify_Iris_Settings::network_auto() ) : ?>
+				<p><?php esc_html_e( 'A network administrator has turned on automatic PDF tagging for every site, so every PDF below is tagged without anyone asking.', 'equalify-iris' ); ?></p>
+			<?php else : ?>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="equalify_iris_save_site">
+					<?php wp_nonce_field( 'equalify_iris_save_site' ); ?>
+
+					<table class="form-table" role="presentation">
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Automatic PDF tagging', 'equalify-iris' ); ?></th>
+							<td>
+								<label>
+									<input type="checkbox" name="auto_tag" value="1" <?php checked( Equalify_Iris_Settings::site_auto() ); ?> aria-describedby="equalify-iris-auto-help">
+									<?php esc_html_e( 'Add accessibility tags to every PDF visitors can reach', 'equalify-iris' ); ?>
+								</label>
+								<p class="description" id="equalify-iris-auto-help">
+									<?php esc_html_e( 'The PDFs below are tagged a few at a time, and new ones as soon as a page linking to them is published.', 'equalify-iris' ); ?>
+								</p>
+							</td>
+						</tr>
+					</table>
+
+					<?php submit_button(); ?>
+				</form>
+			<?php endif; ?>
+
+			<h2><?php esc_html_e( 'PDFs visitors can reach', 'equalify-iris' ); ?></h2>
+
+			<?php if ( ! Equalify_Iris_Discovery::indexed() ) : ?>
+				<div class="notice notice-info inline"><p><?php esc_html_e( 'Equalify Iris is still reading this site’s content for PDF links. More may appear here over the next few minutes.', 'equalify-iris' ); ?></p></div>
+			<?php endif; ?>
+
+			<?php if ( ! Equalify_Iris_Settings::auto_enabled() && $untagged ) : ?>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="equalify_iris_tag_all">
+					<?php wp_nonce_field( 'equalify_iris_tag_all' ); ?>
+					<?php
+					submit_button(
+						/* translators: %d: how many PDFs have no tagged copy. */
+						sprintf( _n( 'Send the %d untagged PDF to Iris for Tagging', 'Send all %d untagged PDFs to Iris for Tagging', $untagged, 'equalify-iris' ), $untagged ),
+						'secondary',
+						'submit',
+						false
+					);
+					?>
+				</form>
+			<?php endif; ?>
+
+			<?php if ( $working && $last_run && time() - $last_run > 15 * MINUTE_IN_SECONDS ) : ?>
+				<div class="notice notice-warning inline"><p>
+					<?php
+					echo esc_html(
+						sprintf(
+							/* translators: %s: a length of time, such as "2 hours". */
+							__( 'Nothing is moving: the background job last ran %s ago. A network administrator can see why on Network Admin → Equalify Iris.', 'equalify-iris' ),
+							human_time_diff( $last_run )
+						)
+					);
+					?>
+				</p></div>
+			<?php elseif ( $working ) : ?>
+				<p>
+					<?php
+					echo esc_html(
+						$last_run
+							? sprintf(
+								/* translators: 1: how many PDFs, 2: a length of time, such as "2 minutes". */
+								_n( '%1$d PDF is being tagged. Equalify Iris last checked on it %2$s ago, and checks every few minutes. Reload this page to see the latest.', '%1$d PDFs are being tagged. Equalify Iris last checked on them %2$s ago, and checks every few minutes. Reload this page to see the latest.', $working, 'equalify-iris' ),
+								$working,
+								human_time_diff( $last_run )
+							)
+							: sprintf(
+								/* translators: %d: how many PDFs. */
+								_n( '%d PDF is being tagged. Reload this page to see the latest.', '%d PDFs are being tagged. Reload this page to see the latest.', $working, 'equalify-iris' ),
+								$working
+							)
+					);
+					?>
+				</p>
+			<?php endif; ?>
+
+			<?php $table->views(); ?>
+
+			<form method="get">
+				<input type="hidden" name="page" value="<?php echo esc_attr( self::SLUG ); ?>">
+				<?php if ( '' !== Equalify_Iris_List_Table::current_filter() ) : ?>
+					<input type="hidden" name="<?php echo esc_attr( Equalify_Iris_List_Table::FILTER ); ?>" value="<?php echo esc_attr( Equalify_Iris_List_Table::current_filter() ); ?>">
+				<?php endif; ?>
+				<?php $table->display(); ?>
+			</form>
+		</div>
+		<?php
+	}
+
+
+	public static function save_site(): void {
+		self::require_cap( 'manage_options' );
+		check_admin_referer( 'equalify_iris_save_site' );
+
+		Equalify_Iris_Settings::set_site_auto( ! empty( $_POST['auto_tag'] ) );
+		wp_cache_delete( 'untagged', 'equalify_iris' );
+
+		self::redirect( self::site_page_url(), 'saved' );
+	}
+
+	// -----------------------------------------------------------------------
+	// What the list's actions do
+	// -----------------------------------------------------------------------
+
+	private static function require_cap( string $cap ): void {
+		if ( ! current_user_can( $cap ) ) {
+			wp_die( esc_html__( 'You are not allowed to do that.', 'equalify-iris' ), 403 );
+		}
+	}
+
+	/** Check the permission and nonce on a single-PDF link, and return its id. */
+	private static function verify( string $action ): int {
+		self::require_cap( 'manage_options' );
+
+		$attachment_id = isset( $_GET['attachment'] ) ? absint( $_GET['attachment'] ) : 0;
+
+		check_admin_referer( $action . '_' . $attachment_id );
+
+		return $attachment_id;
+	}
+
+	/** Back to the page of the list the admin was on. */
+	private static function back(): string {
+		$referer = wp_get_referer();
+
+		return $referer ? remove_query_arg( array( 'equalify-iris', '_wpnonce', 'action', 'action2', 'attachment' ), $referer ) : self::site_page_url();
+	}
+
+	public static function handle_tag(): void {
+		$attachment_id = self::verify( 'equalify_iris_tag' );
+
+		self::redirect( self::back(), Equalify_Iris_Tagger::queue( $attachment_id ) ? 'queued' : 'not-public' );
+	}
+
+	public static function handle_remove(): void {
+		$attachment_id = self::verify( 'equalify_iris_remove' );
+
+		if ( Equalify_Iris_Tagger::is_pdf( $attachment_id ) ) {
+			Equalify_Iris_Tagger::remove( $attachment_id );
+		}
+
+		self::redirect( self::back(), 'removed' );
+	}
+
+	public static function handle_tag_all(): void {
+		self::require_cap( 'manage_options' );
+		check_admin_referer( 'equalify_iris_tag_all' );
+
+		Equalify_Iris_Tagger::queue_all();
+
+		self::redirect( self::site_page_url(), 'queued-all' );
+	}
+
+	/** The list's bulk actions, before the screen is drawn. */
+	public static function handle_bulk(): void {
+		$table  = new Equalify_Iris_List_Table();
+		$action = $table->current_action();
+
+		if ( ! in_array( $action, array( 'equalify_iris_tag', 'equalify_iris_remove' ), true ) ) {
+			return;
+		}
+
+		self::require_cap( 'manage_options' );
+		check_admin_referer( 'bulk-pdfs' );
+
+		$ids = isset( $_REQUEST['attachment'] ) ? array_map( 'absint', (array) wp_unslash( $_REQUEST['attachment'] ) ) : array();
+
+		foreach ( $ids as $id ) {
+			if ( 'equalify_iris_tag' === $action ) {
+				Equalify_Iris_Tagger::queue( $id );
+			} elseif ( Equalify_Iris_Tagger::is_pdf( $id ) ) {
+				Equalify_Iris_Tagger::remove( $id );
+			}
+		}
+
+		self::redirect( self::back(), 'equalify_iris_tag' === $action ? 'queued-all' : 'removed' );
+	}
+
+	// -----------------------------------------------------------------------
+	// The network screen
+	// -----------------------------------------------------------------------
+
+	public static function add_network_page(): void {
+		add_menu_page(
+			__( 'Equalify Iris', 'equalify-iris' ),
+			__( 'Equalify Iris', 'equalify-iris' ),
+			'manage_network_options',
+			self::SLUG,
+			array( __CLASS__, 'render_network_page' ),
+			'dashicons-media-document',
+			22
 		);
 	}
 
-	/**
-	 * Open a form that posts one action.
-	 *
-	 * Every button in this plugin is a form, not a link. A link that changes
-	 * something can be triggered by anything that fetches URLs — a browser
-	 * prefetcher, a security scanner, an email preview. "Stop processing" firing
-	 * because someone's mail client looked at a link is a real class of bug.
-	 */
-	public static function form_open( string $action, string $screen ): void {
-		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-		echo '<input type="hidden" name="action" value="equalify_iris_action">';
-		echo '<input type="hidden" name="equalify_iris_action" value="' . esc_attr( $action ) . '">';
-		echo '<input type="hidden" name="equalify_iris_screen" value="' . esc_attr( $screen ) . '">';
+	public static function render_network_page(): void {
+		$has_token = '' !== Equalify_Iris_Settings::api_token();
+		?>
+		<div class="wrap">
+			<h1><?php esc_html_e( 'Equalify Iris', 'equalify-iris' ); ?></h1>
 
-		wp_nonce_field( self::NONCE );
+			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from each site’s published pages, posts, menus and widgets. Links point at the tagged copy; the original file is kept. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
+
+			<form method="post" action="<?php echo esc_url( network_admin_url( 'edit.php?action=equalify_iris_save_network' ) ); ?>">
+				<?php wp_nonce_field( 'equalify_iris_save_network' ); ?>
+
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><?php esc_html_e( 'Automatic PDF tagging', 'equalify-iris' ); ?></th>
+						<td>
+							<label>
+								<input type="checkbox" name="network_auto" value="1" <?php checked( Equalify_Iris_Settings::network_auto() ); ?> aria-describedby="equalify-iris-network-auto-help">
+								<?php esc_html_e( 'Turn on automatic PDF tagging for every site', 'equalify-iris' ); ?>
+							</label>
+							<p class="description" id="equalify-iris-network-auto-help">
+								<?php esc_html_e( 'Every public PDF on every site is tagged, and site admins no longer see the setting or the notice asking them to turn it on. When this is off, each site decides for itself.', 'equalify-iris' ); ?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="equalify-iris-api-url"><?php esc_html_e( 'API address', 'equalify-iris' ); ?></label></th>
+						<td>
+							<input type="url" class="regular-text code" id="equalify-iris-api-url" name="api_url" value="<?php echo esc_attr( Equalify_Iris_Settings::api_url() ); ?>" aria-describedby="equalify-iris-api-url-help">
+							<p class="description" id="equalify-iris-api-url-help">
+								<?php
+								printf(
+									/* translators: %s: the default API address. */
+									esc_html__( 'Only change this if you run your own Equalify Iris. Include the version, for example %s', 'equalify-iris' ),
+									'<code>' . esc_html( Equalify_Iris_Settings::DEFAULT_API_URL ) . '</code>'
+								);
+								?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="equalify-iris-api-token"><?php esc_html_e( 'Shared API token', 'equalify-iris' ); ?></label></th>
+						<td>
+							<?php if ( Equalify_Iris_Settings::token_is_from_constant() ) : ?>
+								<p><?php esc_html_e( 'Set by EQUALIFY_IRIS_API_TOKEN in wp-config.php, which takes priority over anything entered here.', 'equalify-iris' ); ?></p>
+							<?php else : ?>
+								<input type="password" class="regular-text code" id="equalify-iris-api-token" name="api_token" value="" autocomplete="off" spellcheck="false" aria-describedby="equalify-iris-api-token-help">
+								<p class="description" id="equalify-iris-api-token-help">
+									<?php
+									echo esc_html(
+										$has_token
+											? __( 'A token is saved. Enter a new one to replace it, or leave this empty to keep it.', 'equalify-iris' )
+											: __( 'Leave this empty unless whoever runs your Equalify Iris gave you a token. The public deployment needs none.', 'equalify-iris' )
+									);
+									?>
+								</p>
+								<?php if ( $has_token ) : ?>
+									<p><label><input type="checkbox" name="forget_token" value="1"> <?php esc_html_e( 'Remove the saved token', 'equalify-iris' ); ?></label></p>
+								<?php endif; ?>
+							<?php endif; ?>
+						</td>
+					</tr>
+				</table>
+
+				<p class="submit">
+					<?php submit_button( __( 'Save Changes', 'equalify-iris' ), 'primary', 'submit', false ); ?>
+					<?php submit_button( __( 'Save and check the connection', 'equalify-iris' ), 'secondary', 'check', false ); ?>
+				</p>
+			</form>
+
+			<?php self::render_job(); ?>
+
+			<?php self::render_sites(); ?>
+		</div>
+		<?php
 	}
 
-	/** Close a form. */
-	public static function form_close(): void {
-		echo '</form>';
-	}
+	/** Every site's progress, a page at a time. */
+	private static function render_sites(): void {
+		// phpcs:disable WordPress.Security.NonceVerification
+		$page   = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1;
+		$search = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
+		// phpcs:enable
 
-	/** A one-button form. */
-	public static function button( string $action, string $screen, string $label, string $class = 'button' ): void {
-		self::form_open( $action, $screen );
-		printf(
-			'<button type="submit" class="%s">%s</button>',
-			esc_attr( $class ),
-			esc_html( $label )
+		$query = array( 'network_id' => get_current_network_id() );
+
+		if ( '' !== $search ) {
+			$query['search'] = '*' . $search . '*';
+		}
+
+		$total = (int) get_sites( $query + array( 'count' => true ) );
+		$sites = get_sites(
+			$query + array(
+				'number' => self::SITES_PER_PAGE,
+				'offset' => ( $page - 1 ) * self::SITES_PER_PAGE,
+			)
 		);
-		self::form_close();
+		?>
+		<h2><?php esc_html_e( 'Sites', 'equalify-iris' ); ?></h2>
+
+		<form method="get" action="<?php echo esc_url( network_admin_url( 'admin.php' ) ); ?>" role="search">
+			<input type="hidden" name="page" value="<?php echo esc_attr( self::SLUG ); ?>">
+			<p class="search-box">
+				<label class="screen-reader-text" for="equalify-iris-site-search"><?php esc_html_e( 'Search sites', 'equalify-iris' ); ?></label>
+				<input type="search" id="equalify-iris-site-search" name="s" value="<?php echo esc_attr( $search ); ?>">
+				<?php submit_button( __( 'Search Sites', 'equalify-iris' ), '', '', false ); ?>
+			</p>
+		</form>
+
+		<?php if ( ! $sites ) : ?>
+			<p><?php esc_html_e( 'No sites found.', 'equalify-iris' ); ?></p>
+			<?php return; ?>
+		<?php endif; ?>
+
+		<table class="widefat striped">
+			<thead>
+				<tr>
+					<th scope="col"><?php esc_html_e( 'Site', 'equalify-iris' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Automatic tagging', 'equalify-iris' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Public PDFs', 'equalify-iris' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Tagged', 'equalify-iris' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Being tagged', 'equalify-iris' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Could not be tagged', 'equalify-iris' ); ?></th>
+				</tr>
+			</thead>
+			<tbody>
+				<?php foreach ( $sites as $site ) : ?>
+					<?php
+					switch_to_blog( (int) $site->blog_id );
+
+					$name     = get_bloginfo( 'name' );
+					$public   = Equalify_Iris_Discovery::count( 'public' );
+					$untagged = Equalify_Iris_Discovery::count( 'untagged' );
+					$tagged   = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::TAGGED );
+					$working  = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::QUEUED ) + Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::WORKING );
+					$failed   = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::FAILED );
+					$auto     = Equalify_Iris_Settings::auto_enabled();
+					$indexed  = Equalify_Iris_Discovery::indexed();
+					$started  = Equalify_Iris_Discovery::started();
+
+					restore_current_blog();
+
+					$actions = array(
+						sprintf(
+							'<a href="%s">%s<span class="screen-reader-text"> %s</span></a>',
+							esc_url( self::site_page_url( (int) $site->blog_id ) ),
+							esc_html__( 'Manage PDFs', 'equalify-iris' ),
+							/* translators: %s: a site's name. */
+							esc_html( sprintf( __( 'on %s', 'equalify-iris' ), $name ) )
+						),
+					);
+
+					if ( ! $started ) {
+						$actions[] = sprintf(
+							'<a href="%s">%s<span class="screen-reader-text"> %s</span></a>',
+							esc_url( wp_nonce_url( network_admin_url( 'edit.php?action=equalify_iris_read_site&site=' . (int) $site->blog_id ), 'equalify_iris_read_site_' . (int) $site->blog_id ) ),
+							esc_html__( 'Look for PDFs', 'equalify-iris' ),
+							/* translators: %s: a site's name. */
+							esc_html( sprintf( __( 'on %s', 'equalify-iris' ), $name ) )
+						);
+					}
+
+					if ( $started && ! $auto && $untagged ) {
+						$actions[] = sprintf(
+							'<a href="%s">%s<span class="screen-reader-text"> %s</span></a>',
+							esc_url( wp_nonce_url( network_admin_url( 'edit.php?action=equalify_iris_tag_site&site=' . (int) $site->blog_id ), 'equalify_iris_tag_site_' . (int) $site->blog_id ) ),
+							/* translators: %d: how many PDFs have no tagged copy. */
+							esc_html( sprintf( _n( 'Send %d untagged PDF to Iris for Tagging', 'Send %d untagged PDFs to Iris for Tagging', $untagged, 'equalify-iris' ), $untagged ) ),
+							/* translators: %s: a site's name. */
+							esc_html( sprintf( __( 'on %s', 'equalify-iris' ), $name ) )
+						);
+					}
+					?>
+					<tr>
+						<td>
+							<strong><?php echo esc_html( $name ); ?></strong><br>
+							<span class="description"><?php echo esc_html( untrailingslashit( $site->domain . $site->path ) ); ?></span><br>
+							<?php echo implode( ' | ', $actions ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped above. ?>
+						</td>
+						<td><?php echo esc_html( $auto ? __( 'On', 'equalify-iris' ) : __( 'Off', 'equalify-iris' ) ); ?></td>
+						<td>
+							<?php
+							if ( ! $started ) {
+								esc_html_e( 'Not read yet', 'equalify-iris' );
+							} elseif ( ! $indexed ) {
+								/* translators: %s: PDFs found so far. */
+								echo esc_html( sprintf( __( '%s so far', 'equalify-iris' ), number_format_i18n( $public ) ) );
+							} else {
+								echo esc_html( number_format_i18n( $public ) );
+							}
+							?>
+						</td>
+						<td><?php echo esc_html( number_format_i18n( $tagged ) ); ?></td>
+						<td><?php echo self::count_link( $working, (int) $site->blog_id, 'working', $name ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?></td>
+						<td><?php echo self::count_link( $failed, (int) $site->blog_id, 'failed', $name ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?></td>
+					</tr>
+				<?php endforeach; ?>
+			</tbody>
+		</table>
+
+		<?php
+		$links = paginate_links(
+			array(
+				'base'    => add_query_arg( array( 'paged' => '%#%', 's' => '' !== $search ? rawurlencode( $search ) : false ), self::network_page_url() ),
+				'format'  => '',
+				'current' => $page,
+				'total'   => (int) ceil( $total / self::SITES_PER_PAGE ),
+			)
+		);
+
+		if ( $links ) {
+			printf(
+				'<nav class="tablenav" aria-label="%s"><div class="tablenav-pages">%s</div></nav>',
+				esc_attr__( 'Sites pages', 'equalify-iris' ),
+				wp_kses_post( $links )
+			);
+		}
+	}
+
+	public static function handle_tag_site(): void {
+		self::require_cap( 'manage_network_options' );
+
+		$site_id = isset( $_GET['site'] ) ? absint( $_GET['site'] ) : 0;
+
+		check_admin_referer( 'equalify_iris_tag_site_' . $site_id );
+
+		if ( get_site( $site_id ) ) {
+			switch_to_blog( $site_id );
+			Equalify_Iris_Tagger::queue_all();
+			restore_current_blog();
+			Equalify_Iris_Runner::wake( $site_id );
+		}
+
+		self::redirect( self::network_page_url(), 'queued-all' );
+	}
+
+	public static function handle_read_site(): void {
+		self::require_cap( 'manage_network_options' );
+
+		$site_id = isset( $_GET['site'] ) ? absint( $_GET['site'] ) : 0;
+
+		check_admin_referer( 'equalify_iris_read_site_' . $site_id );
+
+		if ( get_site( $site_id ) ) {
+			Equalify_Iris_Runner::wake( $site_id );
+		}
+
+		self::redirect( self::network_page_url(), 'reading' );
+	}
+
+	/** Whether the background job is running, and keeping up. */
+	private static function render_job(): void {
+		$last    = Equalify_Iris_Runner::last_run();
+		$waiting = Equalify_Iris_Runner::waiting();
+		$late    = $waiting && time() - $last > 15 * MINUTE_IN_SECONDS;
+		?>
+		<h2><?php esc_html_e( 'Background job', 'equalify-iris' ); ?></h2>
+
+		<?php if ( $late ) : ?>
+			<div class="notice notice-warning inline">
+				<p><?php esc_html_e( 'The background job has not run for more than 15 minutes, and sites are waiting for it. WP-Cron only runs when the main site is visited; on a large network, or on hosts such as Pantheon, run this every five minutes from a scheduler instead:', 'equalify-iris' ); ?></p>
+				<p><code>wp equalify-iris run --url=<?php echo esc_html( untrailingslashit( preg_replace( '#^https?://#', '', network_home_url() ) ) ); ?></code></p>
+			</div>
+		<?php endif; ?>
+
+		<table class="widefat striped">
+			<tbody>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Last run', 'equalify-iris' ); ?></th>
+					<td>
+						<?php
+						echo esc_html(
+							$last
+								/* translators: %s: how long ago, such as "3 mins". */
+								? sprintf( __( '%s ago', 'equalify-iris' ), human_time_diff( $last ) )
+								: __( 'Never', 'equalify-iris' )
+						);
+						?>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Sites waiting for it', 'equalify-iris' ); ?></th>
+					<td><?php echo esc_html( number_format_i18n( $waiting ) ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'PDFs at Iris now', 'equalify-iris' ); ?></th>
+					<td>
+						<?php
+						/* translators: 1: PDFs being tagged now, 2: the most at once. */
+						echo esc_html( sprintf( __( '%1$s of at most %2$s', 'equalify-iris' ), number_format_i18n( Equalify_Iris_Runner::count_at_iris() ), number_format_i18n( Equalify_Iris_Runner::max_at_iris() ) ) );
+						?>
+					</td>
+				</tr>
+			</tbody>
+		</table>
+		<?php
+	}
+
+	public static function save_network(): void {
+		self::require_cap( 'manage_network_options' );
+		check_admin_referer( 'equalify_iris_save_network' );
+
+		$url = isset( $_POST['api_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['api_url'] ) ) ) : '';
+		Equalify_Iris_Settings::set_api_url( '' !== $url ? $url : Equalify_Iris_Settings::DEFAULT_API_URL );
+
+		if ( ! empty( $_POST['forget_token'] ) ) {
+			Equalify_Iris_Settings::set_api_token( '' );
+		} elseif ( ! empty( $_POST['api_token'] ) ) {
+			Equalify_Iris_Settings::set_api_token( trim( wp_unslash( $_POST['api_token'] ) ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		}
+
+		Equalify_Iris_Settings::set_network_auto( ! empty( $_POST['network_auto'] ) );
+
+		$back = self::network_page_url();
+
+		if ( ! empty( $_POST['check'] ) ) {
+			$check = Equalify_Iris_API_Client::check();
+
+			if ( ! $check['ok'] ) {
+				set_site_transient( 'equalify_iris_check', $check['message'], MINUTE_IN_SECONDS );
+				self::redirect( $back, 'check-failed' );
+			}
+
+			self::redirect( $back, 'connected' );
+		}
+
+		self::redirect( $back, 'saved' );
 	}
 }
