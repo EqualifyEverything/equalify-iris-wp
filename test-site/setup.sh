@@ -6,14 +6,15 @@
 #
 #   - A three-site multisite network, running locally over HTTPS.
 #   - The plugin mounted live from ../plugin/equalify-iris and network-activated.
-#   - Sample PDFs on every site, linked from published pages — plus a draft, a private
-#     page, and a 30-page PDF, so you can check that the things the plugin is supposed
-#     to ignore are actually ignored.
+#   - Sample PDFs in every site's media library: some linked from published pages,
+#     a 30-page PDF that is too long to tag, and some that are not public (linked
+#     only from a draft or a private page, or not linked at all), which the plugin
+#     must never list or send.
 #
 # WHAT IT DOES NOT DO
 #
-#   Connect to Equalify Iris. That needs your GitHub account, so it is a step you do
-#   yourself once the site is up. The script prints the command at the end.
+#   Tag anything, or point at a real Equalify Iris. Automatic tagging starts off on
+#   every site. The script prints how to start the mock Iris at the end.
 #
 # SAFE TO RUN TWICE
 #
@@ -115,7 +116,7 @@ if ! ddev wp core is-installed --network 2>/dev/null; then
 		--admin_email="$ADMIN_EMAIL" \
 		--skip-email
 
-	note "Turning on pretty permalinks, which document pages need to get readable URLs."
+	note "Turning on pretty permalinks."
 	ddev wp rewrite structure '/%postname%/' --quiet
 	ddev wp rewrite flush --quiet
 else
@@ -125,11 +126,15 @@ fi
 # ---------------------------------------------------------------------------
 say "Creating the other sites"
 
+# Read the list once: with pipefail, grep -q closing the pipe early can make the
+# whole check fail.
+existing="$(ddev wp site list --field=url 2>/dev/null || true)"
+
 for site in "research:Research Office" "library:University Library"; do
 	slug="${site%%:*}"
 	title="${site#*:}"
 
-	if ddev wp site list --field=url 2>/dev/null | grep -q "/${slug}/"; then
+	if grep -q "/${slug}/" <<<"$existing"; then
 		note "Site '${slug}' already exists."
 		continue
 	fi
@@ -170,9 +175,14 @@ make_pdf "annual-report.pdf"      4  "Annual Accessibility Report"
 make_pdf "meeting-minutes.pdf"    2  "Committee Meeting Minutes"
 make_pdf "research-findings.pdf"  6  "Research Findings 2026"
 make_pdf "reading-list.pdf"       3  "Reading List"
-make_pdf "unpublished-notes.pdf"  2  "Notes On A Draft Page"
-make_pdf "private-memo.pdf"       2  "A Private Memo"
 make_pdf "very-long-manual.pdf"   30 "A Manual Too Long To Convert"
+make_pdf "unpublished-notes.pdf"  2  "Unpublished Notes"
+make_pdf "private-memo.pdf"       1  "Private Memo"
+make_pdf "unlinked-file.pdf"      1  "Nobody Links To This"
+make_pdf "field-brochure.pdf"     1  "Linked From A Custom Field"
+make_pdf "category-guide.pdf"     1  "Linked From A Category Description"
+make_pdf "menu-handout.pdf"       1  "Linked From A Menu"
+make_pdf "widget-flyer.pdf"       1  "Linked From A Widget"
 
 # ---------------------------------------------------------------------------
 say "Adding content"
@@ -211,15 +221,15 @@ seed_site() {
 	local url="$1"
 	shift
 
-	# --- A published page with two PDFs on it. The ordinary case, and the one that
-	# --- should end up with two icons.
+	# --- A published page with two PDFs on it, and one on another domain, which the
+	# --- plugin must never touch.
 	if ! ddev wp post list --post_type=page --field=post_title --url="$url" 2>/dev/null | grep -qxF "Documents"; then
 		local first second
 		first="$(import_pdf "$url" "$1")"
 		second="$(import_pdf "$url" "$2")"
 
 		make_page "$url" publish "Documents" \
-			"<p>Two documents on one published page, which should end up with two icons.</p>
+			"<p>Two documents on one published page.</p>
 <p><a href=\"${first}\">Read the first document</a></p>
 <p><a href=\"${second}\">Read the second document</a></p>
 <p>And <a href=\"https://example.org/somewhere-else.pdf\">a PDF on another site</a>, which the plugin must not touch.</p>"
@@ -227,8 +237,7 @@ seed_site() {
 		note "\"Documents\" already exists on ${url}."
 	fi
 
-	# --- The same PDF linked twice on one page, to prove it is queued once and gets
-	# --- an icon in both places.
+	# --- The same PDF linked twice, so both links have to switch.
 	if ! ddev wp post list --post_type=page --field=post_title --url="$url" 2>/dev/null | grep -qxF "Linked Twice"; then
 		local repeat
 		repeat="$(import_pdf "$url" "$1")"
@@ -239,43 +248,81 @@ seed_site() {
 		note "\"Linked Twice\" already exists on ${url}."
 	fi
 
-	# --- A draft. Its PDF must never be converted.
-	if ! ddev wp post list --post_type=page --post_status=draft --field=post_title --url="$url" 2>/dev/null | grep -qxF "Draft Page"; then
-		local draft_pdf
-		draft_pdf="$(import_pdf "$url" "unpublished-notes.pdf")"
-
-		make_page "$url" draft "Draft Page" \
-			"<p>A draft. <a href=\"${draft_pdf}\">This PDF</a> must never be converted.</p>"
-	else
-		note "\"Draft Page\" already exists on ${url}."
-	fi
-
-	# --- A private page. Same rule.
-	if ! ddev wp post list --post_type=page --post_status=private --field=post_title --url="$url" 2>/dev/null | grep -qxF "Private Page"; then
-		local private_pdf
-		private_pdf="$(import_pdf "$url" "private-memo.pdf")"
-
-		make_page "$url" private "Private Page" \
-			"<p>Private. <a href=\"${private_pdf}\">This PDF</a> must never be converted either.</p>"
-	else
-		note "\"Private Page\" already exists on ${url}."
-	fi
-
-	# --- A 30-page PDF, which should end up marked "too long" rather than failed.
+	# --- A 30-page PDF, which should fail with "too long" before it is ever uploaded.
 	if ! ddev wp post list --post_type=page --field=post_title --url="$url" 2>/dev/null | grep -qxF "A Very Long Manual"; then
 		local long_pdf
 		long_pdf="$(import_pdf "$url" "very-long-manual.pdf")"
 
 		make_page "$url" publish "A Very Long Manual" \
-			"<p><a href=\"${long_pdf}\">A 30-page manual</a>. Equalify Iris stops at 25 pages, so this should be listed as too long — not as a failure.</p>"
+			"<p><a href=\"${long_pdf}\">A 30-page manual</a>. Equalify Iris stops at 25 pages, so this one cannot be tagged.</p>"
 	else
 		note "\"A Very Long Manual\" already exists on ${url}."
 	fi
+
+	# --- PDFs that are not public. None of these may appear in the plugin's list.
+	if ! ddev wp post list --post_type=page --post_status=any --field=post_title --url="$url" 2>/dev/null | grep -qxF "Draft Page"; then
+		local draft_pdf private_pdf
+		draft_pdf="$(import_pdf "$url" "unpublished-notes.pdf")"
+		private_pdf="$(import_pdf "$url" "private-memo.pdf")"
+		import_pdf "$url" "unlinked-file.pdf" >/dev/null
+
+		make_page "$url" draft "Draft Page" \
+			"<p><a href=\"${draft_pdf}\">Notes</a> on a page nobody can see yet. Publish the page and the PDF appears in the list.</p>"
+		make_page "$url" private "Private Page" \
+			"<p><a href=\"${private_pdf}\">A private memo</a>.</p>"
+	else
+		note "\"Draft Page\" already exists on ${url}."
+	fi
+}
+
+# PDFs linked from somewhere other than a page's content: a custom field, a category
+# description, and the site's navigation. The main and research sites keep the block
+# theme, so their menu is a Navigation block; the library switches to a classic theme
+# for a classic menu and a widget.
+seed_elsewhere() {
+	local url="$1"
+
+	if ddev wp post list --post_type=page --field=post_title --url="$url" 2>/dev/null | grep -qxF "Custom Field"; then
+		note "The PDFs outside page content already exist on ${url}."
+		return
+	fi
+
+	local field category menu
+	field="$(import_pdf "$url" "field-brochure.pdf")"
+	category="$(import_pdf "$url" "category-guide.pdf")"
+	menu="$(import_pdf "$url" "menu-handout.pdf")"
+
+	local page
+	page="$(ddev wp post create --post_type=page --post_status=publish --post_title="Custom Field" \
+		--post_content="<p>The PDF for this page is in its brochure_pdf custom field, not here.</p>" --porcelain --url="$url" | tail -1 | tr -d '\r')"
+	ddev wp post meta add "$page" brochure_pdf "$field" --url="$url" --quiet
+
+	ddev wp term update category 1 --description="<a href=\"${category}\">A guide to this category</a>" --url="$url" --quiet
+
+	if [ "$url" = "${SITE_URL}/library" ]; then
+		local flyer
+		flyer="$(import_pdf "$url" "widget-flyer.pdf")"
+
+		ddev wp theme install twentytwentyone --activate --url="$url" --quiet 2>/dev/null || ddev wp theme activate twentytwentyone --url="$url" --quiet
+		ddev wp menu create "Main" --url="$url" --porcelain >/dev/null
+		ddev wp menu item add-custom main "Handout (PDF)" "$menu" --url="$url" --quiet
+		ddev wp menu location assign main primary --url="$url" --quiet
+		ddev wp widget add custom_html sidebar-1 1 --title="Flyer" --content="<a href=\"${flyer}\">This week's flyer</a>" --url="$url" --quiet
+	else
+		ddev wp post create --post_type=wp_navigation --post_status=publish --post_title="Header navigation" \
+			--post_content="<!-- wp:navigation-link {\"label\":\"Handout (PDF)\",\"url\":\"${menu}\",\"kind\":\"custom\"} /-->" --url="$url" --quiet
+	fi
+
+	note "Linked PDFs from a custom field, a category description and the navigation on ${url}."
 }
 
 seed_site "$SITE_URL"                 "annual-report.pdf"     "meeting-minutes.pdf"
 seed_site "${SITE_URL}/research"      "research-findings.pdf" "annual-report.pdf"
 seed_site "${SITE_URL}/library"       "reading-list.pdf"      "meeting-minutes.pdf"
+
+seed_elsewhere "$SITE_URL"
+seed_elsewhere "${SITE_URL}/research"
+seed_elsewhere "${SITE_URL}/library"
 
 # ---------------------------------------------------------------------------
 say "Done"
@@ -283,7 +330,8 @@ say "Done"
 cat <<INFO
 
     Network dashboard   ${SITE_URL}/wp-admin/network/
-    Plugin screen       ${SITE_URL}/wp-admin/network/admin.php?page=equalify-iris
+    Network screen      ${SITE_URL}/wp-admin/network/admin.php?page=equalify-iris
+    Site screen         ${SITE_URL}/wp-admin/admin.php?page=equalify-iris
     Username            ${ADMIN_USER}
     Password            ${ADMIN_PASS}
 
@@ -294,32 +342,25 @@ cat <<INFO
 
     NEXT STEPS
 
-      1. Connect to Equalify Iris, which needs your GitHub account:
+      1. Point the site at a fake Iris, so no PDF leaves your machine:
 
-             ddev wp equalify-iris connect
+             ./bin/start-mock-iris.sh
 
-         Or press "Connect with GitHub" on the plugin's Settings screen.
+      2. Tag something: Equalify Iris → "Send to Iris for Tagging" on a PDF, or turn
+         on automatic tagging on the same screen.
 
-      2. Start the process:
+      3. Run the background job by hand instead of waiting for WP-Cron:
 
-             ddev wp equalify-iris start
-
-      3. Run the background job by hand, as often as you like:
-
-             ./tick.sh          # one tick
-             ./tick.sh 10       # ten ticks in a row
+             ./tick.sh          # one run
+             ./tick.sh 5        # five in a row
 
       4. Check on it:
 
              ddev wp equalify-iris status
-             ddev wp equalify-iris doctor
-             ddev wp equalify-iris list
-             ddev wp equalify-iris log
 
     Useful things:
 
       ddev launch /wp-admin/network/          Open the dashboard in a browser
-      ddev logs -f                            Watch the web server log
       ddev exec tail -f wp-content/debug.log  Watch PHP notices
       ./reset.sh                              Throw it all away and start again
 

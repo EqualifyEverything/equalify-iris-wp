@@ -1,34 +1,27 @@
 #!/usr/bin/env bash
 #
-# Run the plugin's background job by hand.
+# Run the plugin's background job by hand, instead of waiting five minutes for
+# WP-Cron. One run works through every site on the network that has something to
+# do. A PDF takes a few runs: one to upload it, then one or more while Iris
+# converts it, then one to fetch the tagged copy.
 #
-# WHY YOU NEED THIS
-#
-#   In production the job runs every five minutes on a schedule. Waiting five minutes
-#   between each step of a test is intolerable, so this runs a tick immediately.
-#
-#   Each tick does a small, capped amount of work — at most one upload, five status
-#   checks, two imports, twenty posts swept. So getting a document all the way from
-#   "found" to "published" takes several ticks, which is why this takes a count.
+# It talks to whichever Iris the site points at. Use ./bin/start-mock-iris.sh unless
+# you mean to send the sample PDFs somewhere real.
 #
 # USAGE
 #
-#   ./tick.sh          # one tick
-#   ./tick.sh 10       # ten ticks, one after another
-#
-# WHAT TO EXPECT
-#
-#   The first few ticks mostly sweep, because there is nothing queued yet. Then
-#   uploads start. Then a wait, because Iris takes minutes — ticks during that wait
-#   look like they are doing nothing, and they are: they are polling.
+#   ./tick.sh                                   # one run, then the main site's status
+#   ./tick.sh 5                                 # five in a row
+#   ./tick.sh 5 https://equalify-iris-test.ddev.site/research   # then that site's status
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 count="${1:-1}"
+url="${2:-https://equalify-iris-test.ddev.site}"
 
-ddev wp equalify-iris tick --count="$count"
+ddev wp equalify-iris run --count="$count"
 
 echo
-ddev wp equalify-iris status
+ddev wp equalify-iris status --url="$url"

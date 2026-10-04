@@ -2,28 +2,12 @@
 /**
  * WHAT IS THIS FILE?
  *
- * The command line interface: `wp equalify-iris <command>`.
+ * `wp equalify-iris`, for checking on and driving the plugin from a terminal.
+ * `run` works through the whole network; everything else acts on one site, so
+ * pick which with WP-CLI's own --url.
  *
- * WHY DOES IT EXIST?
- *
- * Because the dashboard is where you watch the plugin, and the command line is
- * where you diagnose it. Three things are much easier here than in a browser:
- *
- *   1. RUNNING A TICK AND SEEING EVERY DETAIL, with no page load in the way and no
- *      30-second web-server timeout to worry about.
- *   2. WORKING OUT WHY NOTHING IS HAPPENING. `wp equalify-iris doctor` checks every
- *      requirement in turn and says which one is not met. That question — "it says
- *      it is running but nothing is converting" — is the most common one this
- *      plugin will ever be asked, and it has about six possible answers.
- *   3. AUTOMATION. A real cron entry, a deploy script, a bulk retry after fixing a
- *      network problem.
- *
- * Every command here works through exactly the same code as the dashboard, so a fix
- * applied here is a fix everywhere. There is one command with no button: `purge`,
- * which deletes every converted page on the network at once. That is a large,
- * irreversible thing to do and it belongs somewhere it cannot be reached by a
- * mis-click. Deleting one document's page IS in the dashboard, because that is the
- * common case and it should not require server access.
+ * On a large network, or a host such as Pantheon where WP-Cron is not
+ * dependable, a scheduler runs `wp equalify-iris run` every five minutes.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -32,880 +16,164 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Equalify_Iris_CLI {
 
-	private static ?Equalify_Iris_Plugin $plugin = null;
-
-	/** Register the command with WP-CLI. */
-	public static function register( Equalify_Iris_Plugin $plugin ): void {
-		self::$plugin = $plugin;
-
-		WP_CLI::add_command( 'equalify-iris', __CLASS__ );
-	}
-
 	/**
-	 * Show what the plugin is doing right now.
+	 * Show the settings and how far this site's PDFs have got.
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp equalify-iris status
+	 *     wp equalify-iris status --url=example.org/research
 	 */
 	public function status(): void {
-		$counts = Equalify_Iris_Documents::counts_by_status();
-		$cursor = Equalify_Iris_Sweeper::cursor();
+		WP_CLI::line( 'API address:          ' . Equalify_Iris_Settings::api_url() );
+		WP_CLI::line( 'Token:                ' . ( '' !== Equalify_Iris_Settings::api_token() ? 'set' : 'none' ) );
+		WP_CLI::line( 'Automatic, network:   ' . ( Equalify_Iris_Settings::network_auto() ? 'on' : 'off' ) );
+		WP_CLI::line( 'Automatic, this site: ' . ( Equalify_Iris_Settings::site_auto() ? 'on' : 'off' ) );
 
-		WP_CLI::line( '' );
-		WP_CLI::line( 'Processing:  ' . ( Equalify_Iris_Settings::get( 'running' ) ? 'ON' : 'OFF' ) );
-		WP_CLI::line( 'Iris:        ' . self::auth_summary() );
+		$last = Equalify_Iris_Runner::last_run();
+		WP_CLI::line( 'Last run:             ' . ( $last ? human_time_diff( $last ) . ' ago' : 'never' ) );
+		WP_CLI::line( 'Sites waiting:        ' . Equalify_Iris_Runner::waiting() );
+		WP_CLI::line( 'PDFs at Iris:         ' . Equalify_Iris_Runner::count_at_iris() . ' of at most ' . Equalify_Iris_Runner::max_at_iris() );
 
-		$next = Equalify_Iris_Scheduler::next_run();
-		WP_CLI::line( 'Next tick:   ' . ( $next ? gmdate( 'Y-m-d H:i:s', $next ) . ' UTC' : 'not scheduled' ) );
-
-		$last = (int) Equalify_Iris_Settings::get( 'last_tick' );
-		WP_CLI::line( 'Last tick:   ' . ( $last ? gmdate( 'Y-m-d H:i:s', $last ) . ' UTC' : 'never' ) );
-
-		$until = Equalify_Iris_API_Client::circuit_open_until();
-
-		if ( $until ) {
-			WP_CLI::line( 'Paused until: ' . gmdate( 'Y-m-d H:i:s', $until ) . ' UTC' );
-		}
-
-		WP_CLI::line( '' );
-		WP_CLI::line( 'First search: ' . ( Equalify_Iris_Sweeper::is_complete()
-			? 'complete'
-			: sprintf( 'in progress (site %d, up to post %d)', $cursor['site_id'], $cursor['post_id'] ) ) );
-
-		WP_CLI::line( '' );
-
-		$rows = array();
-
-		foreach ( Equalify_Iris_Documents::status_labels() as $status => $label ) {
-			$rows[] = array(
-				'status' => $status,
-				'means'  => $label,
-				'count'  => $counts[ $status ],
-			);
-		}
-
-		$rows[] = array(
-			'status' => 'TOTAL',
-			'means'  => '',
-			'count'  => $counts['total'],
-		);
-
-		WP_CLI\Utils\format_items( 'table', $rows, array( 'status', 'means', 'count' ) );
+		$this->list_pdfs();
 	}
 
 	/**
-	 * Check every requirement and report what is not met.
-	 *
-	 * Run this first whenever the plugin appears to be doing nothing.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris doctor
+	 * Ask Iris whether it can tag PDFs for us.
 	 */
-	public function doctor(): void {
-		$problems = 0;
+	public function check(): void {
+		$check = Equalify_Iris_API_Client::check();
 
-		$checks = array(
-			array(
-				'name' => 'Multisite',
-				'ok'   => is_multisite(),
-				'fix'  => 'This plugin only works on a multisite network.',
-			),
-			array(
-				'name' => 'Database tables',
-				'ok'   => Equalify_Iris_Database::tables_exist(),
-				'fix'  => 'Deactivate and reactivate the plugin in Network Admin to create them.',
-			),
-			array(
-				'name' => 'Equalify Iris will accept us',
-				'ok'   => ! Equalify_Iris_Settings::blocked_by_auth(),
-				'fix'  => 'This deployment is closed and needs a shared API token. Get it from whoever runs Equalify Iris, then run: wp equalify-iris connect --token=<secret>',
-			),
-			array(
-				'name' => 'Processing turned on',
-				'ok'   => (bool) Equalify_Iris_Settings::get( 'running' ),
-				'fix'  => 'Run: wp equalify-iris start',
-			),
-			array(
-				'name' => 'Background job scheduled',
-				'ok'   => (bool) Equalify_Iris_Scheduler::next_run(),
-				'fix'  => 'Visit any Network Admin page, which reschedules it.',
-			),
-			array(
-				'name' => 'Equalify Iris reachable',
-				'ok'   => ! Equalify_Iris_API_Client::circuit_is_open(),
-				'fix'  => 'Paused after repeated failures. It will resume on its own; see the activity log for the reason.',
-			),
-			array(
-				'name' => 'cURL available (for low-memory uploads)',
-				'ok'   => function_exists( 'curl_file_create' ),
-				'fix'  => 'Not fatal, but large PDFs will be skipped on low-memory hosts. Ask your host to enable the PHP cURL extension.',
-			),
-			array(
-				'name' => 'Pretty permalinks',
-				'ok'   => (bool) get_option( 'permalink_structure' ),
-				'fix'  => 'Not fatal — document pages fall back to plain URLs — but pretty permalinks give them readable addresses.',
-			),
-		);
+		$check['ok'] ? WP_CLI::success( $check['message'] ) : WP_CLI::error( $check['message'] );
+	}
 
-		$page_cap = self::server_page_cap();
-
-		if ( null !== $page_cap ) {
-			$checks[] = array(
-				'name' => 'Our page limit matches the server\'s',
-				'ok'   => $page_cap === Equalify_Iris_Settings::MAX_PDF_PAGES,
-				'fix'  => sprintf(
-					'Equalify Iris now converts up to %1$d pages; this plugin assumes %2$d. Update MAX_PDF_PAGES in includes/class-settings.php. Until then, PDFs between the two numbers are either rejected on upload or reported as too long when they are not.',
-					$page_cap,
-					Equalify_Iris_Settings::MAX_PDF_PAGES
-				),
-			);
+	/**
+	 * Queue PDFs for tagging. Sends them to Equalify Iris on the next run.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <id>...
+	 * : Attachment ids.
+	 */
+	public function tag( array $args ): void {
+		foreach ( $args as $id ) {
+			Equalify_Iris_Tagger::queue( (int) $id )
+				? WP_CLI::log( "Queued {$id}." )
+				: WP_CLI::warning( "{$id} is not a PDF that visitors can reach on this site." );
 		}
 
-		WP_CLI::line( '' );
-
-		foreach ( $checks as $check ) {
-			if ( $check['ok'] ) {
-				WP_CLI::line( '  OK    ' . $check['name'] );
-
-				continue;
-			}
-
-			++$problems;
-			WP_CLI::line( '  FIX   ' . $check['name'] );
-			WP_CLI::line( '        ' . $check['fix'] );
+		if ( ! Equalify_Iris_Discovery::indexed() ) {
+			Equalify_Iris_Runner::wake();
+			WP_CLI::warning( 'This site has not finished reading its content, so some PDFs are not known yet. Run `wp equalify-iris run`, then try again.' );
 		}
+	}
 
-		WP_CLI::line( '' );
-
-		// WP-Cron gets its own paragraph rather than a row above, because the answer
-		// is not yes or no — a disabled WP-Cron is correct on a well-run server and
-		// broken on a badly-run one, and only the person reading this knows which.
-		if ( Equalify_Iris_Scheduler::wp_cron_is_disabled() ) {
-			WP_CLI::line( 'NOTE: WP-Cron is turned off on this install (DISABLE_WP_CRON).' );
-			WP_CLI::line( '      That is the recommended setup, but only if a real cron job runs' );
-			WP_CLI::line( '      WordPress on a schedule. Confirm this exists in your crontab:' );
-			WP_CLI::line( '' );
-			WP_CLI::line( '        */5 * * * * cd ' . ABSPATH . ' && wp cron event run --due-now --url=' . home_url() );
-			WP_CLI::line( '' );
-		} else {
-			WP_CLI::line( 'NOTE: WP-Cron runs on page loads, so a site with no visitors does no' );
-			WP_CLI::line( '      work. For steady progress, add a real cron job:' );
-			WP_CLI::line( '' );
-			WP_CLI::line( '        */5 * * * * cd ' . ABSPATH . ' && wp cron event run --due-now --url=' . home_url() );
-			WP_CLI::line( '' );
-		}
-
-		if ( $problems ) {
-			WP_CLI::warning( sprintf( '%d thing(s) need attention.', $problems ) );
-
+	/**
+	 * Have sites read their content for PDF links on the next run.
+	 *
+	 * A site is otherwise only read once someone opens its Equalify Iris screen,
+	 * tags a PDF, or turns on automatic tagging.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--network]
+	 * : Every site on the network, not just the one --url picks.
+	 */
+	public function read( array $args, array $assoc ): void {
+		if ( ! empty( $assoc['network'] ) ) {
+			Equalify_Iris_Runner::wake_all();
+			WP_CLI::success( 'Every site will read its content, a few at a time, over the next runs.' );
 			return;
 		}
 
-		WP_CLI::success( 'Everything checks out.' );
+		Equalify_Iris_Runner::wake();
+		WP_CLI::success( 'This site will read its content on the next run.' );
 	}
 
 	/**
-	 * The page limit this Iris deployment actually enforces, or null if it will not
-	 * say.
-	 *
-	 * WHY ASK AT ALL?
-	 *
-	 * Because the plugin hard-codes 25 pages, and that number belongs to the Iris
-	 * server rather than to us. If it ever moves, the symptom is confusing in both
-	 * directions: a lower cap means uploads Iris rejects, and a higher one means
-	 * documents reported as "too long" that Iris would happily have converted. This
-	 * is a one-line answer to a question that would otherwise take an afternoon.
-	 *
-	 * Returns null rather than failing the check when the endpoint is missing or
-	 * unreachable — an older deployment has no /limits at all, and "we could not
-	 * ask" is not a problem to report to somebody running doctor to find out why
-	 * nothing is happening.
-	 */
-	private static function server_page_cap(): ?int {
-		$limits = Equalify_Iris_API_Client::limits();
-
-		if ( is_wp_error( $limits ) || ! isset( $limits['max_pages'] ) ) {
-			return null;
-		}
-
-		$cap = (int) $limits['max_pages'];
-
-		return $cap > 0 ? $cap : null;
-	}
-
-	/**
-	 * One line saying whether Iris will accept us, for status and the log.
-	 */
-	private static function auth_summary(): string {
-		$repo = (string) Equalify_Iris_Settings::get( 'upstream_repo' );
-		$repo = $repo ? ', contributions to ' . $repo : '';
-
-		switch ( Equalify_Iris_Settings::auth_state() ) {
-			case Equalify_Iris_Settings::AUTH_OK:
-				return sprintf(
-					'usable (%s deployment%s)',
-					Equalify_Iris_Settings::has_api_token() ? 'closed, our token accepted' : 'open',
-					$repo
-				);
-
-			case Equalify_Iris_Settings::AUTH_NEEDS_TOKEN:
-				return 'REFUSING US — needs a shared API token. Run: wp equalify-iris connect --token=<secret>';
-
-			case Equalify_Iris_Settings::AUTH_DEPLOYMENT_ERROR:
-				return 'the Iris server cannot authenticate itself to GitHub. Not ours to fix; tell whoever runs it.';
-
-			default:
-				return 'not checked yet — run: wp equalify-iris connect';
-		}
-	}
-
-	/**
-	 * Check that Equalify Iris will accept us, and store a shared secret if this
-	 * deployment needs one.
-	 *
-	 * THERE IS NO SIGN-IN. Iris v1 removed client authentication: it holds its own
-	 * GitHub credential and you never see it. Most deployments, including the
-	 * public one, are open and need nothing at all — so on a normal network this
-	 * command takes no arguments and only confirms that things work.
-	 *
-	 * `--token` is for the other case: an operator who closed their deployment with
-	 * `server.api_token` and gave you the secret. It is a door key, not an
-	 * identity, and it is shared by everyone who has it.
+	 * Delete Iris-tagged versions, so links point at the originals again.
 	 *
 	 * ## OPTIONS
 	 *
-	 * [--token=<secret>]
-	 * : The shared secret, for a deployment that requires one.
-	 *
-	 * [--forget]
-	 * : Delete the stored secret and everything the last check learned.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris connect
-	 *     wp equalify-iris connect --token=the-secret-the-operator-gave-you
-	 *     wp equalify-iris connect --forget
+	 * <id>...
+	 * : Attachment ids.
 	 */
-	public function connect( array $args, array $assoc_args ): void {
-		if ( ! empty( $assoc_args['forget'] ) ) {
-			Equalify_Iris_Settings::forget_api_token();
-			WP_CLI::success( 'Forgot the stored token. Run this command again to re-check the deployment.' );
-
-			return;
+	public function remove( array $args ): void {
+		foreach ( $args as $id ) {
+			Equalify_Iris_Tagger::remove( (int) $id );
+			WP_CLI::log( "Removed the Iris-tagged version of {$id}." );
 		}
-
-		if ( isset( $assoc_args['token'] ) ) {
-			if ( Equalify_Iris_Settings::token_is_from_constant() ) {
-				WP_CLI::warning( 'EQUALIFY_IRIS_API_TOKEN is defined in wp-config.php and takes priority, so the token you just passed will be stored but not used.' );
-			}
-
-			Equalify_Iris_Settings::set( 'api_token', trim( (string) $assoc_args['token'] ) );
-		}
-
-		$result = Equalify_Iris_API_Client::check_connection();
-
-		if ( is_wp_error( $result ) ) {
-			WP_CLI::error( $result->get_error_message() );
-		}
-
-		WP_CLI::line( '' );
-		WP_CLI::line( '  Deployment:    ' . ( 'gated' === $result['mode'] ? 'closed — our token was accepted' : 'open — no token needed' ) );
-		WP_CLI::line( '  Files issues as: ' . ( $result['login'] ?: 'unknown' ) );
-		WP_CLI::line( '  Contributions: ' . ( $result['upstream_repo'] ?: 'unknown' ) );
-
-		if ( $result['max_review_iterations'] ) {
-			WP_CLI::line( '  Review rounds: ' . $result['max_review_iterations'] );
-		}
-
-		WP_CLI::line( '' );
-		WP_CLI::line( 'Note: document extracts are attributed to that account, not to this network.' );
-		WP_CLI::line( '' );
-
-		WP_CLI::success( 'Equalify Iris will accept us.' );
 	}
 
 	/**
-	 * Turn processing on.
+	 * Run the background job for the whole network now.
+	 *
+	 * Works through the sites that have something to do until the time is up,
+	 * then stops. Schedule it every five minutes on hosts where WP-Cron is not
+	 * dependable. Pantheon, with Terminus:
+	 *
+	 *     terminus wp <site>.<env> -- equalify-iris run
+	 *
+	 * Talks to whichever Iris the API address points at. A real PDF sent to the
+	 * public deployment may be quoted in a public GitHub issue.
 	 *
 	 * ## OPTIONS
 	 *
-	 * [--restart-search]
-	 * : Also start the search for existing PDFs again from the beginning.
+	 * [--seconds=<n>]
+	 * : How long a run may last. Keep it under the host's limit on PHP processes;
+	 * on Pantheon that is 120 seconds. Defaults to EQUALIFY_IRIS_RUN_SECONDS, or 90.
+	 *
+	 * [--count=<n>]
+	 * : How many runs, one after another.
+	 * ---
+	 * default: 1
+	 * ---
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp equalify-iris start
-	 *     wp equalify-iris start --restart-search
+	 *     wp equalify-iris run --url=example.org
 	 */
-	public function start( array $args, array $assoc_args ): void {
-		if ( Equalify_Iris_Settings::blocked_by_auth() ) {
-			WP_CLI::error( 'Equalify Iris is refusing us: this deployment needs a shared API token. Run: wp equalify-iris connect --token=<secret>' );
-		}
-
-		if ( ! empty( $assoc_args['restart-search'] ) ) {
-			Equalify_Iris_Sweeper::reset();
-			WP_CLI::line( 'The search for existing PDFs will start again from the beginning.' );
-		}
-
-		Equalify_Iris_Settings::set( 'running', true );
-		Equalify_Iris_Scheduler::schedule();
-
-		Equalify_Iris_Logger::log( __( 'Processing was turned on from the command line.', 'equalify-iris' ) );
-
-		WP_CLI::success( 'Processing is on. The next tick runs within five minutes.' );
-	}
-
-	/**
-	 * Turn processing off.
-	 *
-	 * Nothing is lost. Documents already at Iris finish and are collected when
-	 * processing is turned back on.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris stop
-	 */
-	public function stop(): void {
-		Equalify_Iris_Settings::set( 'running', false );
-
-		Equalify_Iris_Logger::log( __( 'Processing was turned off from the command line.', 'equalify-iris' ) );
-
-		WP_CLI::success( 'Processing is off. Nothing has been lost.' );
-	}
-
-	/**
-	 * Run one background tick right now and report what it did.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [--count=<number>]
-	 * : Run this many ticks in a row. Default 1.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris tick
-	 *     wp equalify-iris tick --count=10
-	 */
-	public function tick( array $args, array $assoc_args ): void {
-		$count = max( 1, (int) ( $assoc_args['count'] ?? 1 ) );
+	public function run( array $args, array $assoc ): void {
+		$count   = max( 1, (int) $assoc['count'] );
+		$seconds = isset( $assoc['seconds'] ) ? max( 30, (int) $assoc['seconds'] ) : 0;
 
 		for ( $i = 1; $i <= $count; $i++ ) {
-			$result = self::$plugin->scheduler->run_now();
+			$done = Equalify_Iris_Runner::run( $seconds );
 
-			if ( empty( $result['ran'] ) ) {
-				WP_CLI::line( sprintf( 'Tick %d: did nothing (%s).', $i, $result['reason'] ?: 'nothing to do' ) );
-			} else {
-				WP_CLI::line(
-					sprintf(
-						'Tick %d: checked %d, imported %d, uploaded %d, retired %d, swept %d posts (found %d PDFs) in %ss.',
-						$i,
-						$result['checked'],
-						$result['imported'],
-						$result['uploaded'],
-						$result['retired'],
-						$result['swept'],
-						$result['found'],
-						$result['seconds']
-					)
-				);
-			}
-
-			// A pause between ticks, because back-to-back ticks would hammer Iris in
-			// a way the real five-minute schedule never does.
-			if ( $i < $count ) {
-				sleep( 5 );
-			}
-		}
-
-		WP_CLI::success( 'Done.' );
-	}
-
-	/**
-	 * Search the network for PDFs on published content, without converting anything.
-	 *
-	 * Useful for seeing how much work there is before turning processing on.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [--all]
-	 * : Keep going until the whole network has been searched, rather than one batch.
-	 *
-	 * [--restart]
-	 * : Start the search again from the beginning.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris sweep --all
-	 */
-	public function sweep( array $args, array $assoc_args ): void {
-		if ( ! empty( $assoc_args['restart'] ) ) {
-			Equalify_Iris_Sweeper::reset();
-		}
-
-		$scanned = 0;
-		$found   = 0;
-
-		do {
-			$result   = self::$plugin->sweeper->run_batch();
-			$scanned += $result['scanned'];
-			$found   += $result['found'];
-
-			if ( $result['scanned'] ) {
-				WP_CLI::line(
-					sprintf(
-						'Site %d: searched %d posts so far, found %d PDFs.',
-						$result['site_id'],
-						$scanned,
-						$found
-					)
-				);
-			}
-
-			$keep_going = ! empty( $assoc_args['all'] ) && ! $result['complete'] && $result['scanned'] > 0;
-		} while ( $keep_going );
-
-		if ( Equalify_Iris_Sweeper::is_complete() ) {
-			WP_CLI::success( sprintf( 'Search complete. Searched %d posts, found %d PDFs.', $scanned, $found ) );
-
-			return;
-		}
-
-		WP_CLI::success( sprintf( 'Searched %d posts, found %d PDFs. More to go.', $scanned, $found ) );
-	}
-
-	/**
-	 * Put failed documents back in the queue.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [<id>...]
-	 * : Document ids to retry. Leave out to retry every failed document.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris retry
-	 *     wp equalify-iris retry 12 34
-	 */
-	public function retry( array $args ): void {
-		if ( $args ) {
-			foreach ( $args as $id ) {
-				Equalify_Iris_Documents::retry( (int) $id );
-			}
-
-			WP_CLI::success( sprintf( 'Queued %d document(s) for another try.', count( $args ) ) );
-
-			return;
-		}
-
-		$failed = Equalify_Iris_Documents::query(
-			array(
-				'status'   => Equalify_Iris_Documents::FAILED,
-				'per_page' => 1000,
-			)
-		);
-
-		foreach ( $failed['items'] as $document ) {
-			Equalify_Iris_Documents::retry( (int) $document->id );
-		}
-
-		WP_CLI::success( sprintf( 'Queued %d failed document(s) for another try.', count( $failed['items'] ) ) );
-	}
-
-	/**
-	 * Delete a document's public page.
-	 *
-	 * The page is deleted outright rather than trashed. This says nothing about
-	 * whether the PDF should be converted: the document goes back in the queue and
-	 * the page is rebuilt on a later tick, at the same URL. Use it when a page is
-	 * wrong or stale and you want it made again.
-	 *
-	 * To delete a page and have it stay deleted, use `exclude` instead.
-	 *
-	 * The original PDF is never touched.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [<id>...]
-	 * : Document ids. Use --all instead to delete every converted page.
-	 *
-	 * [--all]
-	 * : Delete the page of every document that has one.
-	 *
-	 * [--yes]
-	 * : Do not ask for confirmation.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris delete 42
-	 *     wp equalify-iris delete 42 51 63
-	 *     wp equalify-iris delete --all
-	 */
-	public function delete( array $args, array $assoc_args ): void {
-		$all = ! empty( $assoc_args['all'] );
-
-		if ( ! $args && ! $all ) {
-			WP_CLI::error( 'Give one or more document ids, or --all to delete every converted page.' );
-		}
-
-		if ( $args && $all ) {
-			WP_CLI::error( 'Give ids or --all, not both.' );
-		}
-
-		if ( $all ) {
-			$this->delete_all( $assoc_args );
-
-			return;
-		}
-
-		$documents = $this->documents_from_ids( $args );
-
-		WP_CLI::log( 'About to delete the accessible version of:' );
-
-		foreach ( $documents as $document ) {
-			WP_CLI::log( sprintf( '  [%d] %s', (int) $document->id, Equalify_Iris_Documents::display_name( $document ) ) );
-		}
-
-		WP_CLI::log( 'Each will be converted again on a later tick. Use `exclude` to stop that.' );
-		WP_CLI::confirm( 'Continue?', $assoc_args );
-
-		$deleted = 0;
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::delete_page( (int) $document->id ) ) {
-				Equalify_Iris_Logger::log(
-					sprintf(
-						/* translators: %s: a PDF's name. */
-						__( 'A super admin deleted the accessible version of %s. It is back in the queue to be converted again.', 'equalify-iris' ),
-						Equalify_Iris_Documents::display_name( $document )
-					)
-				);
-
-				++$deleted;
-			}
-		}
-
-		WP_CLI::success( sprintf( 'Deleted %d page(s). The PDFs themselves are untouched.', $deleted ) );
-	}
-
-	/**
-	 * Delete every converted page on the network.
-	 */
-	private function delete_all( array $assoc_args ): void {
-		$deleted = 0;
-
-		WP_CLI::warning( 'This deletes every converted page on the network.' );
-		WP_CLI::log( 'They will all be converted again, which on a large network is a lot of work for Equalify Iris.' );
-		WP_CLI::confirm( 'Continue?', $assoc_args );
-
-		// Published and retired are the two statuses that have a page: live for one,
-		// a draft for the other. Working through them by status rather than by
-		// doc_post_id keeps this using the same delete_page() path as everything else.
-		foreach ( array( Equalify_Iris_Documents::PUBLISHED, Equalify_Iris_Documents::RETIRED ) as $status ) {
-			while ( true ) {
-				$batch = Equalify_Iris_Documents::query(
-					array(
-						'status'   => $status,
-						'per_page' => 100,
-					)
-				);
-
-				if ( ! $batch['items'] ) {
-					break;
-				}
-
-				foreach ( $batch['items'] as $document ) {
-					Equalify_Iris_Documents::delete_page( (int) $document->id );
-					++$deleted;
-				}
-			}
-		}
-
-		Equalify_Iris_Logger::log(
-			sprintf(
-				/* translators: %d: how many pages. */
-				__( 'A super admin deleted every accessible version on the network (%d pages). They are all back in the queue.', 'equalify-iris' ),
-				$deleted
-			)
-		);
-
-		WP_CLI::success( sprintf( 'Deleted %d page(s). The PDFs themselves are untouched.', $deleted ) );
-	}
-
-	/**
-	 * Do not convert these PDFs, and delete their pages.
-	 *
-	 * This is the durable one. The documents are marked `excluded` and the sweep
-	 * leaves them alone from then on, so the pages do not come back. Reach for it
-	 * when someone asks for a document to be taken down.
-	 *
-	 * Reversible with `include`.
-	 *
-	 * The original PDF is never touched — this stops the plugin converting it, and
-	 * nothing more. If the PDF itself should not be public, unlink or delete it in
-	 * the media library of the site that owns it.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [<id>...]
-	 * : Document ids.
-	 *
-	 * [--reason=<text>]
-	 * : Why, shown on the Documents screen and written to the activity log.
-	 *
-	 * [--yes]
-	 * : Do not ask for confirmation.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris exclude 42
-	 *     wp equalify-iris exclude 42 --reason="Records request 2026-114"
-	 */
-	public function exclude( array $args, array $assoc_args ): void {
-		if ( ! $args ) {
-			WP_CLI::error( 'Give one or more document ids.' );
-		}
-
-		$reason    = isset( $assoc_args['reason'] ) ? sanitize_text_field( (string) $assoc_args['reason'] ) : '';
-		$documents = $this->documents_from_ids( $args );
-
-		WP_CLI::log( 'About to stop converting, and delete the accessible version of:' );
-
-		foreach ( $documents as $document ) {
-			WP_CLI::log( sprintf( '  [%d] %s', (int) $document->id, Equalify_Iris_Documents::display_name( $document ) ) );
-		}
-
-		WP_CLI::confirm( 'Continue?', $assoc_args );
-
-		$excluded = 0;
-
-		foreach ( $documents as $document ) {
-			if ( Equalify_Iris_Documents::exclude( (int) $document->id, $reason ) ) {
-				Equalify_Iris_Logger::log(
-					sprintf(
-						/* translators: 1: a PDF's name, 2: the reason given, or a full stop. */
-						__( 'A super admin excluded %1$s. Its accessible version was deleted and it will not be converted again%2$s', 'equalify-iris' ),
-						Equalify_Iris_Documents::display_name( $document ),
-						'' !== $reason ? ': ' . $reason : '.'
-					)
-				);
-
-				++$excluded;
-			}
-		}
-
-		WP_CLI::success( sprintf( 'Excluded %d document(s). The PDFs themselves are untouched.', $excluded ) );
-	}
-
-	/**
-	 * Convert these PDFs after all, undoing an exclusion.
-	 *
-	 * Only touches documents that are actually excluded, so it cannot be used to
-	 * push a PDF that is too long back into a queue it will only fall out of again.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [<id>...]
-	 * : Document ids.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris include 42
-	 */
-	public function include( array $args, array $assoc_args ): void {
-		if ( ! $args ) {
-			WP_CLI::error( 'Give one or more document ids.' );
-		}
-
-		$included = 0;
-
-		foreach ( $this->documents_from_ids( $args ) as $document ) {
-			if ( ! Equalify_Iris_Documents::include_again( (int) $document->id ) ) {
-				WP_CLI::warning(
-					sprintf(
-						'[%d] is %s, not excluded. Left alone.',
-						(int) $document->id,
-						(string) $document->status
-					)
-				);
-
+			if ( $done['locked'] ) {
+				WP_CLI::warning( "Run {$i}: another run is still going. Nothing to do." );
 				continue;
 			}
 
-			Equalify_Iris_Logger::log(
-				sprintf(
-					/* translators: %s: a PDF's name. */
-					__( 'A super admin un-excluded %s. It is back in the queue to be converted.', 'equalify-iris' ),
-					Equalify_Iris_Documents::display_name( $document )
-				)
+			WP_CLI::log(
+				sprintf( 'Run %d: %d sites, %d queued, %d uploaded, %d tagged, %d failed. %d sites still waiting.', $i, $done['sites'], $done['queued'], $done['uploaded'], $done['tagged'], $done['failed'], Equalify_Iris_Runner::waiting() )
 			);
-
-			++$included;
 		}
-
-		WP_CLI::success( sprintf( 'Queued %d document(s) to be converted.', $included ) );
 	}
 
-	/**
-	 * Delete every trace of this plugin's work, ready for uninstalling it.
-	 *
-	 * Deletes every converted page and empties both of the plugin's tables. What it
-	 * does NOT do is stop the plugin working: if you leave it activated and running,
-	 * the next sweep finds all the same PDFs and converts them again from scratch.
-	 * This is for the ten minutes before you delete the plugin.
-	 *
-	 * To remove pages and have them stay removed, use `exclude` instead.
-	 *
-	 * Deleting the plugin afterwards removes its settings and tables too. The
-	 * original PDFs are never touched by any of this.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [--yes]
-	 * : Do not ask for confirmation.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris purge
-	 */
-	public function purge( array $args, array $assoc_args ): void {
-		$counts = Equalify_Iris_Documents::counts_by_status();
-
-		WP_CLI::warning( 'This deletes every converted page on the network and empties the queue.' );
-		WP_CLI::log( sprintf( '  %d document(s) tracked, of which %d are published.', (int) $counts['total'], (int) $counts[ Equalify_Iris_Documents::PUBLISHED ] ) );
-		WP_CLI::log( 'If the plugin stays activated and running, everything will be converted again.' );
-
-		WP_CLI::confirm( 'This cannot be undone. Continue?', $assoc_args );
-
-		$deleted = Equalify_Iris_Documents::purge_pages();
-		$rows    = Equalify_Iris_Database::empty_tables();
-
-		Equalify_Iris_Logger::log(
-			sprintf(
-				/* translators: 1: how many pages, 2: how many queue rows. */
-				__( 'A super admin purged everything: %1$d pages deleted and %2$d queue rows cleared.', 'equalify-iris' ),
-				$deleted,
-				$rows
-			)
-		);
-
-		WP_CLI::success( sprintf( 'Deleted %d page(s) and cleared %d queue row(s).', $deleted, $rows ) );
-		WP_CLI::log( 'The PDFs themselves are untouched. Delete the plugin to remove its settings as well.' );
-	}
-
-	/**
-	 * Look up documents by id, refusing the whole batch if any id is wrong.
-	 *
-	 * Checking every id before acting on any of them means a typo in the third id
-	 * does not leave the first two already deleted.
-	 *
-	 * @return array<object>
-	 */
-	private function documents_from_ids( array $ids ): array {
-		$documents = array();
-
-		foreach ( $ids as $id ) {
-			$document = Equalify_Iris_Documents::find( (int) $id );
-
-			if ( ! $document ) {
-				WP_CLI::error( sprintf( 'No document with id %d. Nothing has been changed.', (int) $id ) );
-			}
-
-			$documents[] = $document;
-		}
-
-		return $documents;
-	}
-
-	/**
-	 * List documents.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [--status=<status>]
-	 * : Only show documents in this status.
-	 *
-	 * [--site=<id>]
-	 * : Only show documents from this site.
-	 *
-	 * [--limit=<number>]
-	 * : How many to show. Default 25.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris list --status=failed
-	 */
-	public function list( array $args, array $assoc_args ): void {
-		$result = Equalify_Iris_Documents::query(
-			array(
-				'status'   => (string) ( $assoc_args['status'] ?? '' ),
-				'site_id'  => (int) ( $assoc_args['site'] ?? 0 ),
-				'per_page' => max( 1, (int) ( $assoc_args['limit'] ?? 25 ) ),
-			)
-		);
-
-		if ( ! $result['items'] ) {
-			WP_CLI::line( 'No documents match.' );
-
-			return;
-		}
-
+	private function list_pdfs(): void {
 		$rows = array();
 
-		foreach ( $result['items'] as $document ) {
+		WP_CLI::line( 'Content read:         ' . ( Equalify_Iris_Discovery::indexed() ? 'all of it' : ( Equalify_Iris_Discovery::started() ? 'not yet' : 'not started' ) ) );
+
+		foreach ( Equalify_Iris_Discovery::find( 'listed' ) as $id ) {
 			$rows[] = array(
-				'id'     => $document->id,
-				'site'   => $document->site_id,
-				'file'   => Equalify_Iris_Documents::display_name( $document ),
-				'pages'  => $document->page_count ?: '?',
-				'status' => $document->status,
-				'error'  => $document->last_error,
+				'id'     => $id,
+				'file'   => get_post_meta( $id, '_wp_attached_file', true ),
+				'public' => Equalify_Iris_Discovery::is_public( $id ) ? 'yes' : 'no',
+				'status' => Equalify_Iris_Tagger::status( $id ) ? Equalify_Iris_Tagger::status( $id ) : '-',
+				'iris'   => Equalify_Iris_Tagger::stage( $id ),
+				'since'  => Equalify_Iris_Tagger::since( $id ) ? human_time_diff( Equalify_Iris_Tagger::since( $id ) ) . ' ago' : '',
+				'tries'  => Equalify_Iris_Tagger::attempts( $id ) ? Equalify_Iris_Tagger::attempts( $id ) : '',
+				'tagged' => Equalify_Iris_Tagger::tagged_url( $id ),
+				'error'  => Equalify_Iris_Tagger::error( $id ),
 			);
 		}
 
-		WP_CLI\Utils\format_items( 'table', $rows, array( 'id', 'site', 'file', 'pages', 'status', 'error' ) );
-
-		WP_CLI::line( sprintf( 'Showing %d of %d.', count( $rows ), $result['total'] ) );
-	}
-
-	/**
-	 * Show the activity log.
-	 *
-	 * ## OPTIONS
-	 *
-	 * [--clear]
-	 * : Empty the log instead of showing it.
-	 *
-	 * ## EXAMPLES
-	 *
-	 *     wp equalify-iris log
-	 */
-	public function log( array $args, array $assoc_args ): void {
-		if ( ! empty( $assoc_args['clear'] ) ) {
-			Equalify_Iris_Logger::clear();
-			WP_CLI::success( 'Log cleared.' );
-
+		if ( ! $rows ) {
+			WP_CLI::line( 'Nothing visitors can see on this site links to a PDF.' );
 			return;
 		}
 
-		$entries = Equalify_Iris_Logger::entries();
-
-		if ( ! $entries ) {
-			WP_CLI::line( 'The log is empty.' );
-
-			return;
-		}
-
-		foreach ( array_reverse( $entries ) as $entry ) {
-			WP_CLI::line(
-				sprintf(
-					'[%s] %-7s %s',
-					gmdate( 'Y-m-d H:i:s', (int) $entry['time'] ),
-					strtoupper( (string) $entry['level'] ),
-					(string) $entry['message']
-				)
-			);
-		}
+		WP_CLI\Utils\format_items( 'table', $rows, array( 'id', 'file', 'public', 'status', 'iris', 'since', 'tries', 'tagged', 'error' ) );
 	}
 }

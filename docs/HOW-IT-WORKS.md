@@ -1,431 +1,214 @@
 # How it works
 
-Written for someone who has never opened this repo before. No prior knowledge of the plugin is
-assumed. Terms in **bold** are all defined in one sentence each in [GLOSSARY.md](GLOSSARY.md).
+## The short version
 
----
+A PDF linked from a site's published pages is uploaded to Equalify Iris, which converts it to HTML. The plugin
+then asks Iris for the original PDF back with accessibility tags built from that HTML, saves it next
+to the original as `name-accessible.pdf`, and from then on every link to the original on that site
+points at the tagged copy instead. The links are changed as each page is shown, not in the
+database, so deactivating the plugin or deleting a tagged copy puts them back.
 
-## The one-paragraph version
+## Which PDFs are public
 
-The plugin keeps a to-do list of PDFs in its own database table. A background job runs every five
-minutes and moves a few items one step further along: upload a PDF to Equalify Iris, check on one
-that is converting, import one that is finished. Importing means saving the returned HTML as a
-page of a hidden post type, which gives it a public URL. When a visitor loads any page that links
-to a PDF the plugin has finished, a content filter adds an icon next to that link pointing at the
-HTML version. Nothing happens all at once, on purpose.
+Iris reports problems as public GitHub issues that can quote the document, so only PDFs that are
+already public are ever sent. Public means: a file in this site's media library that something
+visitors can see links to.
 
----
+- **Posts.** A post that is published, has no password, and is of a post type visitors can view:
+  its content, excerpt, custom fields (ACF file fields included, by attachment id), and the synced
+  patterns it shows. Each PDF it links to gets one `_equalify_iris_linked_from` row with the post's
+  id, and the post keeps the list in `_equalify_iris_links` so it can be forgotten cheaply.
+  Whether the post is still published is checked when asked, so unpublishing, trashing or
+  password-protecting a page takes its PDFs off the list straight away.
+- **The site as a whole.** Menus in a theme location or a menu widget; widgets in an active
+  sidebar; a block theme's templates and template parts, with the navigation menus and theme
+  patterns they show; category and tag descriptions; ACF options pages. Each PDF gets one
+  `_equalify_iris_shown_in` row per place. Saving a menu, widget, template, term or option, or
+  switching theme, sets `equalify_iris_places_stale`, and the places are read again.
 
-## The whole flow
+Not found: links written into a theme's PHP files, page builders that keep their layout outside
+the post content and custom fields, and links to another site's uploads.
+
+### Reading what was there before
+
+Saving a post reads it at once. Content written before the plugin was active is read by the
+background job, about 20 seconds' worth per site per run, until it has seen everything.
+`equalify_iris_indexed` holds `generation:last post id read`, or `generation:done`. Bumping the
+network's `equalify_iris_read_generation` (on activation) makes every site start again.
+
+A site is only read once it uses the plugin: someone opens its Equalify Iris screen, asks for a PDF
+to be tagged, chooses **Look for PDFs** on the network screen, or turns on automatic tagging (for
+the site, or for the network). The other 99,000 sites of a big network cost nothing.
+
+### Which post types count, from the background job
+
+The job reads every site from the main one with `switch_to_blog()`, which does not load that
+site's own plugins and theme, so their custom post types, taxonomies and sidebars are not
+registered. Each site therefore writes down its own in `equalify_iris_profile` whenever it loads
+itself: on a front-end visit, or any request while it has no profile yet. The job goes by that.
+Until a site has one, the job counts only posts, pages, categories and tags. When the profile
+changes, the site's places are read again, and if its types changed, its posts too.
+
+Custom fields saved without saving the post (imports, scripts) are caught on `updated_post_meta`
+and the post read again at the end of the request. Over 200 posts in one request, and the site is
+read again from the start instead.
+
+## Asking for a PDF to be tagged
+
+- **By hand.** Equalify Iris → **Send to Iris for Tagging**, on one PDF, in bulk, or on every untagged
+  one. A super admin can do the same for a whole site from Network Admin → Equalify Iris.
+- **Automatically.** When it is on for the site or for the whole network, a PDF is queued as soon as
+  a page linking to it is published, and public PDFs already linked are queued 50 per run.
+
+Either way the PDF is only queued, and the site made due. As the request ends, a run is started
+straight away (at most once a minute) so the person who asked sees it move without waiting for the
+schedule. Nothing is sent to Iris during the request
+that asked, and a queued PDF whose page has been unpublished by the time its turn comes is not sent.
+
+## The background job
+
+One WP-Cron event for the whole network, `equalify_iris_run`, every five minutes on the main site.
+A real scheduler can call `wp equalify-iris run` instead, and an admin page anywhere on the network
+starts a run (a non-blocking request to `wp-cron.php`) when the last one is over ten minutes old.
+
+**Which sites have work.** A site with something to do has an `equalify_iris_due` row in the
+network's `blogmeta` table, holding when it is next due. A run asks for due sites, longest-waiting
+first, and gives each one a turn before any gets a second. A site with nothing to do has no row, so
+quiet sites cost one indexed query per run. The table is read and written with direct SQL, not
+`get_site_meta()`, because a cached copy would always be out of date.
+
+**How long.** `EQUALIFY_IRIS_RUN_SECONDS`, 90 by default, inside the 120 seconds Pantheon allows.
+Every request to Iris is cut to what is left of the run. A run holds `equalify_iris_lock` (a network
+option), and a lock older than the run plus two minutes is taken over.
+
+**How many at Iris.** `EQUALIFY_IRIS_MAX_AT_IRIS`, 4 by default, across the network, kept in the
+network option `equalify_iris_at_iris` as `site:attachment => when uploaded`. No site has more than
+two at once, so one site cannot take every slot. Entries over 15 minutes old whose PDF is no longer
+being worked on are dropped at the start of a run.
+
+Each site's turn, switched to it:
+
+1. **Reads content** it has not read yet, for up to 20 seconds.
+2. **Catches up.** If automatic tagging is on and has not caught up since it was switched on, queues
+   up to 50 public PDFs nobody has asked about.
+3. **Checks on PDFs at Iris.** `GET /sessions/{id}`. A failed conversion is marked failed with Iris's
+   reason.
+4. **Uploads.** While the network and the site have room at Iris, checks that the next queued PDF is
+   still public, checks its size and page count, and uploads it (`POST /sessions`, up to 60
+   seconds).
+5. **Fetches one.** For **one** PDF that is ready, `POST /sessions/{id}/pdf` with `retag: true`,
+   waiting as long as the run has left, if that is at least 30 seconds. The tagged copy is saved,
+   added to the link map, and the session closed.
+
+Then the site's due time is set: now if it has more to read or queue; in a minute if it has queued
+PDFs (five while the network has no room at Iris); in two if it has PDFs at Iris; otherwise the row
+is deleted. After each site the runtime object cache is flushed, not
+`clean_post_cache()`, which makes page-cache plugins purge the CDN.
+
+`retag: true` is always sent. Without it, Iris refuses a PDF that already has tags, and a PDF on a
+website almost always has the empty or broken tags an authoring tool added on export.
+
+### When something goes wrong
+
+| What happened | What the plugin does |
+| --- | --- |
+| Over 25 pages or 50 MB | Failed before upload, with the reason |
+| Iris refused it: not a PDF, encrypted, no tagger, needs a token (400, 401, 413, 422, `no_source_pdf`, `tagged_pdf_unavailable`) | Failed, with Iris's own sentence |
+| Iris failed to convert it | Failed, with Iris's reason |
+| Iris is busy (`503 busy`) or not ready (`409 invalid_state`) | Waits for the next run, no penalty |
+| Iris unreachable, 5xx, 429 | Tries again next run, up to 10 times, then failed |
+| Iris took longer than the run could wait for the tagged PDF | Tries again next run, 3 times, then failed |
+| Iris forgot the session (404) | Uploads it again |
+
+A failed PDF stays failed until someone chooses **Send to Iris for Tagging** again.
+
+## Where things are stored
+
+**On each PDF attachment** (post meta):
+
+| Key | Holds |
+| --- | --- |
+| `_equalify_iris_status` | `queued`, `working`, `tagged`, `failed` or `removed`. Absent = never asked about |
+| `_equalify_iris_session` | The Iris session id while at Iris |
+| `_equalify_iris_since` | When it reached its current status, shown as "Sent 3 minutes ago" |
+| `_equalify_iris_stage` | What Iris last said about it while at Iris: `queued`, `running`, `ready_for_review` |
+| `_equalify_iris_error` | Why it failed, or the last problem while retrying |
+| `_equalify_iris_attempts` | Problems in a row while retrying |
+| `_equalify_iris_file` | The tagged copy, relative to the uploads folder |
+| `_equalify_iris_warnings` | The tagger's warning codes, shown as notes in the list |
+| `_equalify_iris_linked_from` | One row per published post that links to it |
+| `_equalify_iris_shown_in` | One row per site-wide place (menu, widgets, templates…) that links to it |
+
+**On each post**: `_equalify_iris_links`, the PDFs it links to.
+
+`removed` means a site admin deleted the tagged copy. Automatic tagging leaves those alone.
+
+**Per site** (options): `equalify_iris_auto_tag` (the site's switch), `equalify_iris_map` (original
+file → tagged file, both relative to uploads), `equalify_iris_indexed` (how far through the content
+it has read), `equalify_iris_places_stale`, `equalify_iris_profile` (its public types, taxonomies
+and sidebars), and `equalify_iris_scanned` (see below).
+
+**Per site, in the network's `blogmeta`**: `equalify_iris_due` (when the job next needs it),
+`equalify_iris_auto` (its admin turned automatic tagging on), and `equalify_iris_used` (it has data
+for uninstall to clean up).
+
+**Per network** (site options): `equalify_iris_api_url`, `equalify_iris_api_token`,
+`equalify_iris_network_auto`, `equalify_iris_generation`, `equalify_iris_read_generation`,
+`equalify_iris_lock`, `equalify_iris_last_run` and `equalify_iris_at_iris`.
+
+### Turning automatic tagging on for a thousand sites
+
+Switching it on network-wide bumps `equalify_iris_generation` and makes every site due, in two
+queries whatever the network's size. A site whose `equalify_iris_scanned` does not match reads its
+content, queues its public PDFs, and records the number once it has queued them all. So the switch
+takes effect on every site without the settings screen visiting each one.
+
+## Swapping the links
+
+On the front end, a site with any tagged PDFs buffers the whole page from `template_redirect` and
+changes it once it is finished, so content, menus, widgets, templates and links a theme prints from
+PHP are all covered. Every `href` or `data` attribute (the File block's inline preview uses `data`)
+that points at a file in this site's uploads folder, and has an entry in the link map, is pointed at
+the tagged copy. Query strings and fragments are kept. Links to other sites, and to PDFs with no
+tagged copy, are left alone. The map is one autoloaded option, so this costs no queries, and a site
+with no tagged PDFs is not buffered at all.
+
+A page cache keeps serving the old links until it is cleared.
+
+## Lifecycle
+
+| Event | What happens |
+| --- | --- |
+| A page linking to a PDF is published | The PDF is queued, if automatic tagging is on |
+| That page is unpublished | The PDF leaves the list, unless it has a tagged copy to delete. A tagged copy stays and links still switch |
+| **Delete Iris-Tagged Version** | Tagged file deleted, map entry removed, status `removed` |
+| The attachment is deleted | Its tagged file and map entry go with it |
+| Deactivate | The job is unscheduled. Links go back to the originals because nothing swaps them. Tagged files stay |
+| Activate | Sites that used the plugin read their content again, in case it changed meanwhile, and carry on |
+| Delete the plugin | `uninstall.php` deletes every tagged file, all our post meta, options and blogmeta, on the sites marked `equalify_iris_used` only, with direct queries |
+
+## The files
 
 ```
-Published post  ──find PDF links──▶  To-do list  ──upload──▶  Iris
-                                          │                     │
-                                          │                  converts
-                                          │                     │
-   Icon next to PDF link  ◀──publish──  Hidden CPT  ◀──HTML──────┘
+equalify-iris.php              Header, constants, requires
+uninstall.php                  Cleanup on delete
+includes/class-plugin.php      Wiring, activation, deactivation
+includes/class-settings.php    Every setting, and whether it is per site or per network
+includes/class-api-client.php  Every request to Iris
+includes/class-pdf-inspector.php  Size and page-count checks before upload
+includes/class-discovery.php   Which PDFs are linked from something visitors can see
+includes/class-tagger.php      The status of each PDF, and one site's turn of the job
+includes/class-runner.php      The network's background job: which sites, how long, how many at Iris
+includes/class-links.php       The front-end link swap
+includes/class-cli.php         wp equalify-iris
+admin/class-admin.php          Both Equalify Iris screens, their actions, and the dashboard notice
+admin/class-list-table.php     The list of a site's public PDFs
 ```
 
-### 1. Connect
-
-**There is nothing to sign into.** Iris v1 has no user accounts. It holds its own GitHub credential
-server-side, and files every issue as its own account — so nothing on this network needs a GitHub
-login, and nothing identifies this network to GitHub.
-
-Most deployments, including the production one, are **open**: anyone who can reach the address can
-use it, and the plugin sends no credential at all. An operator who does not want strangers using
-their deployment can set a shared secret (`server.api_token` in Iris's config), which makes it
-**gated**. Then `GET /v1/me` and `POST /v1/sessions` answer `401` until that secret arrives in an
-`Authorization: Bearer` header.
-
-So "connecting" is one request to `GET /v1/me`, and the answer is the whole configuration:
-
-| It answers | Which means |
-| --- | --- |
-| `200` | Usable. Ready to convert. |
-| `401` "requires a shared API token" | Gated, and we have not got the secret. A human must paste one in. Processing stops. |
-| `401` "could not authenticate to GitHub" | The deployment's own GitHub credential is failing. Nothing here is wrong; Iris retries after 30 seconds. |
-
-The secret, if there is one, is stored network-wide, or read from an `EQUALIFY_IRIS_API_TOKEN`
-constant in `wp-config.php`, which takes priority and keeps it out of database backups. It is a door
-key, not an identity: it says nothing about who is using it.
-
-Because most deployments need no credential, the plugin never gates its own work on *holding* one —
-only on Iris having actually refused it. Any `2xx` clears a previous refusal, so fixing a wrong
-secret unblocks the background job without anyone pressing a button.
-
-### 2. Sweep — find the PDFs that are already there
-
-Pressing **Start** begins the **sweep**: a walk through every site in the network, looking at
-published, non-password-protected posts and pages, and extracting every link that ends in `.pdf`.
-
-The sweep is resumable. It stores a **cursor** — which site, which post ID it got to — as a
-network option. Each run picks up from the cursor, handles a small batch (20 posts by default),
-saves the cursor, and stops. If it is interrupted mid-batch by a timeout, a deploy, or a server
-restart, the next run repeats at most one batch. Nothing is lost.
-
-For each PDF link found, the sweep does two things:
-
-- Adds a row to the **documents** table if this is a PDF the plugin has not seen (site + attachment
-  ID is the unique key).
-- Adds a **sighting**: a row saying "document 42 appears on post 118 of site 3".
-
-Sightings matter more than they look. They answer two questions cheaply:
-
-1. *Is this PDF still public anywhere?* — needed for retirement, in step 8.
-2. *Does this page I am rendering contain any converted PDFs?* — needed for the icon, in step 6.
-   Without sightings, the front end would have to search post content on every page load.
-
-Only PDFs that belong to the network are queued. A link to a PDF on another domain is skipped:
-uploading arbitrary URLs to a converter on somebody's behalf is a server-side request forgery
-waiting to happen, and it is not what this plugin is for.
-
-### 3. Send — upload one PDF to Iris
-
-The background job takes the oldest **pending** document and, before touching the network,
-inspects the file:
-
-- **Page count.** Counted by scanning the PDF bytes in chunks for page markers, with a small
-  overlap between chunks so a marker split across a boundary is still found. No PDF library
-  needed. If the count cannot be determined, the answer is "unknown", and unknown is allowed
-  through — refusing a convertible file because we could not count it would be worse than trying.
-- **Size.**
-
-More than 25 pages becomes `too_long`. More than 50 MB becomes `too_big`. Both are *final states*,
-not failures: they will never succeed, so retrying them is pointless, and keeping them out of the
-failure count means the failure count is a number an admin can actually drive to zero.
-
-Otherwise the file is uploaded as a multipart form to `POST /v1/sessions`, streamed from disk with
-cURL so memory stays flat regardless of file size. (Without cURL, the plugin falls back to
-WordPress's HTTP API, but only if the file will fit in memory; if not, it waits an hour and tries
-again in case cURL comes back.)
-
-Iris replies with a session ID. The document becomes `converting`.
-
-**At most two documents are ever in flight**, matching the two conversions Iris runs at a time. The
-job re-counts in-flight documents inside its own loop, not once at the start, so it cannot overshoot.
-(Iris would accept more and queue them; keeping the queue on our side is what makes the dashboard's
-numbers mean something. See [DECISIONS.md](DECISIONS.md).)
-
-If Iris refuses the upload outright — not a PDF, too many pages, or a page too physically large to
-render — that is final. The document is marked `failed` with Iris's own explanation and is not
-retried, because the same file gets the same answer.
-
-### 4. Wait — poll for the result
-
-Iris is asynchronous; conversion takes minutes. There are no webhooks, so the plugin polls
-`GET /v1/sessions/{id}`.
-
-Polling uses **exponential backoff**: 60 seconds after the first check, then 2, 4, 8… minutes,
-capped at 15 minutes. A slow document therefore does not mean constant polling, and a fast one is
-still noticed quickly.
-
-Iris's status becomes ours:
-
-| Iris says | We do |
-| --- | --- |
-| `queued`, `running` | Wait longer. Back off. |
-| `ready_for_review`, `closed` | Mark **ready**. |
-| `failed` | Mark **failed**, storing Iris's own wording as the reason. |
-| anything else | Treat as still working. Iris may add statuses; an unknown status is not an error. |
-
-A document still converting after two hours is failed on timeout, so nothing sits in flight
-forever holding one of the two slots.
-
-### 5. Import — turn HTML into a page
-
-For a `ready` document the job fetches `GET /v1/sessions/{id}/output`, then:
-
-1. **Cleans the HTML** against an allowlist — a list of what is permitted, not a list of what is
-   banned, because a blocklist is always one tag out of date. The allowlist is WordPress's own
-   `wp_kses` list extended with the attributes accessibility depends on: `scope`, `headers`,
-   `colspan`, `rowspan`, `aria-*`, `role`, `lang`, `id`. The `<main>` and `<title>` Iris wraps its
-   output in are removed here too — the page has one of each already, and two of either is a problem.
-2. **Extracts headings** into post meta, which is what the Contents panel on the page is built
-   from.
-3. **Inserts a post** of the hidden `equalify_iris_doc` post type, with the cleaned HTML as
-   `post_content`.
-4. **Closes the Iris session**, freeing the slot upstream.
-
-Two details in that third step are easy to get wrong:
-
-- The insert is wrapped in `kses_remove_filters()` / `kses_init_filters()`. Cron has no logged-in
-  user, so WordPress's own content filtering would strip tags from our already-cleaned HTML on the
-  grounds that "nobody" is not allowed to post them.
-- The post slug is stored as `{attachment_id}-{title-slug}`. That is what makes the URL
-  `/equalify-iris/1184/report/` resolvable with **no database lookup at all**: the rewrite rule
-  captures two segments, glues them back together with a hyphen, and hands WordPress an ordinary
-  post name.
-
-A `409` from the output endpoint means "not ready yet, despite what the status said". That is not
-a failure; the document goes back to `converting` for another minute.
-
-**A finished document can still be missing a page.** Iris converts pages separately, and one page
-can fail on its own — usually a very dense table — without failing the document. Iris marks each
-hole with a `@page-failed` comment after the closing `</main>`. The plugin counts those before
-cleaning (cleaning removes comments), publishes the document anyway, and writes a warning to the
-activity log naming the document and how many pages are missing. The count is also stored on the
-page as `_equalify_iris_pages_missing`, so incomplete documents can be found later.
-
-Publishing an incomplete document is deliberate: 24 readable pages out of 25 beats a PDF a screen
-reader cannot open. Saying so is equally deliberate, because nobody reading the page could tell.
-
-### 6. Link — the icon
-
-`the_content` gets one filter. It:
-
-1. Bails immediately if the content does not contain `.pdf` at all. That is the case on almost
-   every page, and it costs one string search.
-2. Otherwise runs **one** indexed query — a join of sightings to documents — asking "which
-   converted PDFs appear on this post?".
-3. Rewrites matching anchors: tags the original with `data-equalify-iris-url` and
-   `data-equalify-iris-title`, and appends a separate icon link straight after it.
-
-Just before the PDF link goes a visually hidden sentence, "An accessible version of this PDF is
-linked next.", so someone reading straight through hears about the better option before they reach
-the PDF. The icon link's name is visually hidden text inside it — "Accessible version of report" —
-and the inline SVG is `aria-hidden` and `focusable="false"`. Real text rather than an `aria-label`,
-because a decorative icon with no accessible name is the exact failure this plugin exists to fix,
-and text is the one form every browser, translator and reading mode keeps.
-
-An icon only appears while its accessible version's page is live — including while that PDF is
-being converted again, when the old page stays up. In forced-colours mode the mark's white parts are
-mapped to `Canvas`, so it keeps its shape in both light and dark high-contrast themes.
-
-The original PDF link is never modified beyond those two data attributes, and never replaced.
-
-**There is no front-end JavaScript.** The icon is in the HTML the server sends, which means it
-survives page caching, works with JavaScript disabled, and needs no content-security-policy
-exception.
-
-### 7. Keep up — new content
-
-`transition_post_status` fires whenever anything is published, updated, or unpublished, on any
-site. The plugin:
-
-- **Published** → scan the content for PDFs, queue anything new, refresh its sightings.
-- **Unpublished, password-protected, or deleted** → clear its sightings, and retire straight away
-  any document that has just lost its last one (step 8).
-
-That happens whether or not processing is running or automatic processing is on. Neither setting
-is a reason to leave a page's PDF public after the page has gone.
-
-This is why the sweep only has to happen once. After it finishes, the network stays current by
-itself.
-
-### 8. Retire — when a PDF stops being public
-
-A document with no sightings on any published post is an **orphan**: the post was unpublished, the
-post was deleted, or somebody removed the link. Its accessible version is set back to draft and
-the document is marked `retired`. This happens in the same request as the edit that caused it; the
-tick's orphan check is only a backstop.
-
-This is a privacy obligation, not housekeeping. Somebody unpublished a page; if our copy of its
-PDF stayed readable at a public URL, we would have quietly undone their decision.
-
-Orphan detection has a 10-minute grace period on `created_at`, because a document row is written a
-fraction of a second before its first sighting. Without the grace period, a cron tick landing in
-that window would retire a PDF it had only just discovered.
-
-If the PDF comes back — the page is republished — the document is **revived**: the same draft page
-is republished at the same URL, so old links keep working. Reviving converts nothing, so it happens
-even with processing off.
-
-Whenever an accessible version's page goes live or stops being live, `clean_post_cache()` is called
-for every post linking to it, which is what the common page-cache plugins listen for. Other caches
-can use the `equalify_iris_linking_pages_changed` action.
-
-### Deactivating and reactivating
-
-**Deactivating** stops the tick and takes the `/equalify-iris/…` rule out of every site's stored
-rewrite rules, so each accessible version's address answers a plain 404. Flushing the rules is not
-enough: the deactivation hook runs with our rule still registered, so a flush would store it again,
-and a stale rule with nothing to answer it serves the site's home page with a 200. The icons stop on
-their own, because they are added as each page renders. Nothing is deleted.
-
-**Reactivating** schedules the tick at once, then catches up on what nobody was watching: any
-sighting on a post that stopped being public while the plugin was off is dropped, the PDFs that
-leaves unlinked are retired, and a finished sweep is reopened to find links that were added or
-removed by editing.
-
----
-
-## The background job, in detail
-
-One WP-Cron hook, `equalify_iris_tick`, on a custom five-minute schedule, registered on the main
-site only.
-
-Every tick is capped, and the caps are checked **between** operations rather than only at the
-start, so one slow upload cannot blow the budget:
-
-| Cap | Default | Meaning |
-| --- | --- | --- |
-| Time budget | 20 seconds | Stop starting new work after this. |
-| Uploads | 1 | Files sent to Iris per tick. |
-| Status checks | 5 | Polls per tick. |
-| Imports | 2 | HTML documents saved per tick. |
-| Posts swept | 20 | Posts examined per tick. |
-| In flight | 2 | Total conversions running at Iris. |
-
-The order of work inside a tick is deliberate: **finishing beats starting.** Imports run before
-uploads, because an import frees a slot at Iris while an upload consumes one. A tick that only
-started work would grow the queue; a tick that finishes work shrinks it.
-
-Two ticks can overlap — WordPress cron makes no promise otherwise. Two things prevent that from
-causing double work:
-
-1. A transient **lock**, which is a cheap optimisation and explicitly *not* the guarantee, since
-   transients can be evicted.
-2. **`claim_next()`**, which is the real guarantee: a conditional `UPDATE … WHERE status = 'ready'`
-   that moves a row to `importing` and checks how many rows it changed. Exactly one process can win
-   that update. Whoever changed a row owns it.
-
-That second mechanism is the reason `ready` and `importing` are separate statuses. MySQL reports
-zero affected rows for an update that changes nothing, so claiming `importing → importing` would
-silently never claim anything.
-
-### The circuit breaker
-
-Five consecutive failures talking to Iris opens a **circuit breaker**: the plugin stops calling out
-for 15 minutes. A service that is down does not want a WordPress network retrying every five
-minutes, and there is nothing useful to learn from the sixth timeout in a row.
-
-While the breaker is open, the tick still runs retirement and sweeping, because neither needs the
-network. `429 Too Many Requests` is honoured via `Retry-After`.
-
----
-
-## The document lifecycle
-
-```
-        pending ──▶ uploading ──▶ converting ──▶ ready ──▶ importing ──▶ published
-           │            │              │                                     │
-           │            │              └──▶ failed (retry brings it back)     │
-           │            │                                                     ▼
-           │            └──▶ too_long / too_big  (final — never retried)  retired
-           │                                                                  │
-           └──▶ skipped                                    revive ◀───────────┘
-```
-
-| Status | Meaning |
-| --- | --- |
-| `pending` | On the to-do list, not started. |
-| `checking` | Being inspected for page count and size. |
-| `uploading` | Being sent to Iris. |
-| `converting` | Iris is working. We poll. |
-| `ready` | Iris finished; we have not saved the HTML yet. |
-| `importing` | Claimed by a tick that is saving the HTML now. |
-| `published` | Live at a public URL. The goal. |
-| `retired` | No longer linked from anything public. Page set to draft. |
-| `too_long` | More than 25 pages. Final. |
-| `too_big` | More than 50 MB. Final. |
-| `failed` | Something went wrong. Retryable, up to 5 attempts. |
-| `skipped` | Deliberately not converted. |
-
----
-
-## The files, and what each one is responsible for
-
-### `equalify-iris.php`
-
-The plugin header and bootstrap. Declares `Network: true`, defines four constants, `require`s every
-class in dependency order — plainly, not through an autoloader, so you can read the load order —
-registers activation and deactivation, and hands off to `Equalify_Iris_Plugin::boot()` on
-`plugins_loaded`.
-
-### `includes/`
-
-| File | Responsibility |
-| --- | --- |
-| `class-plugin.php` | Wires everything together. Constructs objects in dependency order and lets each register its own hooks. The map of the plugin. |
-| `class-settings.php` | Every setting, its default, and its bounds. Reads and writes network options. Owns the optional API token, the constant override, and the recorded auth state. |
-| `class-database.php` | Creates and upgrades the two tables. Knows the schema version. |
-| `class-documents.php` | The to-do list. Every read and write of the documents and sightings tables, including `claim_next()`, the status lifecycle, and orphan detection. |
-| `class-logger.php` | The activity log: a capped list of sentences with levels. |
-| `class-api-client.php` | Every HTTP call to Iris, plus the two kinds of `401` and the circuit breaker. The only file that talks to the network. |
-| `class-pdf-inspector.php` | Page count and size, by reading bytes. No PDF library. |
-| `class-html-cleaner.php` | The allowlist, and heading extraction. |
-| `class-post-type.php` | The hidden CPT, its rewrite rule, its permalinks, its template, and the capability map that stops anyone editing a document by hand. |
-| `class-discovery.php` | Finds PDF links in content, resolves them to attachments, records sightings, and handles publish/unpublish/delete. |
-| `class-sweeper.php` | The resumable walk through the network. Owns the cursor. |
-| `class-worker.php` | One tick: retire, import, check, upload, sweep — within the budget. |
-| `class-scheduler.php` | The cron schedule, the hook, and the lock. |
-| `class-frontend.php` | The `the_content` filter, the icon markup, and the stylesheet. |
-| `class-cli.php` | `wp equalify-iris …`, including `doctor`. |
-
-### `admin/`
-
-| File | Responsibility |
-| --- | --- |
-| `class-admin.php` | The network menu, and one `admin_post` handler for every button. Capability check, nonce check, act, then redirect. |
-| `class-admin-overview.php` | Problems, the switch, progress, detail. |
-| `class-admin-documents.php` | The filterable, paginated list, and the Retry button. |
-| `class-admin-settings.php` | Connection, limits, rules, and the plain statement about what Iris publishes. |
-| `class-admin-log.php` | The activity log, newest first. |
-
-### `templates/` and `assets/`
-
-| File | Responsibility |
-| --- | --- |
-| `templates/single-document.php` | The accessible page itself. The thing the whole plugin exists to produce. A theme overrides it with `single-equalify_iris_doc.php`. |
-| `assets/css/icon.css` | The icon. Loads on every page, so it is deliberately tiny and takes its colour from the theme. |
-| `assets/css/document.css` | The document page. Styles our furniture, not the document. |
-| `assets/css/admin.css` | Only the handful of things WordPress core has no class for. |
-
-### `uninstall.php`
-
-Runs on delete, not deactivate. Drops the tables and the settings. **Does not delete the converted
-pages**, because those are live URLs people have shared, and deleting a thousand of them because
-somebody removed a plugin is not recoverable.
-
----
-
-## Every hook the plugin registers
-
-| Hook | What it does |
-| --- | --- |
-| `plugins_loaded` | Boot. |
-| `init` | Register the post type, its rewrite rule, translations; flush rewrites if needed. |
-| `admin_init` | Upgrade the tables if the schema changed; make sure cron is scheduled. |
-| `network_admin_menu` | The four screens. |
-| `admin_post_equalify_iris_action` | Every button. |
-| `admin_enqueue_scripts` / `wp_enqueue_scripts` | The stylesheets. |
-| `cron_schedules` | Adds the five-minute interval. |
-| `equalify_iris_tick` | The background job. |
-| `transition_post_status` | Content published, updated, or unpublished. |
-| `before_delete_post` | Content deleted. |
-| `wp_initialize_site` | A new site joined the network — reopen the sweep if it had finished. |
-| `the_content` | Add the icons. |
-| `post_type_link`, `template_redirect`, `template_include` | Document URLs and the template. |
-| `map_meta_cap` | Nobody edits a converted document by hand. |
-
----
-
-## Filters you can use
-
-| Filter | Purpose |
-| --- | --- |
-| `equalify_iris_icon_label` | The icon link's name, "Accessible version of %s". It is the link's only text. |
-| `equalify_iris_icon_hint` | The hidden sentence before the PDF link. Return `''` to remove it. |
-| `equalify_iris_icon_link` | The whole icon link markup. |
-
-| Action | Purpose |
-| --- | --- |
-| `equalify_iris_linking_pages_changed` | An accessible version went live or stopped being live; purge these posts from a cache WordPress does not know about. |
-
----
-
-## Security boundaries
-
-- **Only network-owned attachments are uploaded.** `Discovery::resolve_attachment()` returns 0 for
-  anything it cannot match to an attachment on this network, and 0 means "do not queue".
-- **Only `publish`, non-password-protected posts are scanned.**
-- **Every admin action checks `manage_network_options` and then a nonce**, in that order, and then
-  redirects so nothing re-runs on refresh.
-- **Every button is a POST form, never a link.** Link prefetchers and email preview services
-  follow links, and "Stop the whole process" is not something an email client should be able to do.
-- **Notices come from a server-side lookup table**, keyed by a code in the URL — never from text in
-  the URL, which would let anyone craft a convincing fake message.
-- **Incoming HTML is allowlisted, once, on the way in.**
-- **The API token, if a deployment needs one, can live in `wp-config.php`** instead of the database,
-  and the UI says which is in use. The field is a password field and is never echoed back.
+## Security
+
+- Every form and action link carries a nonce. The site screen and its actions need
+  `manage_options`; the network screen and its actions need `manage_network_options`.
+- A PDF is checked for being public when it is queued and again just before it is uploaded.
+- The token field is a password field and is never echoed back.
+- The tagged copy is a plain file, not an attachment, so it is never itself queued for tagging.
