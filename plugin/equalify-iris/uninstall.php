@@ -31,16 +31,29 @@ $equalify_iris_clean_site = static function ( string $prefix, string $basedir ) 
 	// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	$files = $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$prefix}postmeta WHERE meta_key = %s", '_equalify_iris_file' ) );
 
+	// Only files that look like ours, inside this site's uploads folder: the
+	// same test as Equalify_Iris_Tagger::tagged_path(), which is not loaded here.
+	$base = realpath( $basedir );
+
 	foreach ( $files as $file ) {
-		if ( '' !== $file && false === strpos( $file, '..' ) ) {
-			wp_delete_file( trailingslashit( $basedir ) . $file );
+		if ( ! $base || false !== strpos( $file, "\0" ) || ! preg_match( '#^(?:[^/\\\\]+/)*[^/\\\\]+-accessible(?:-\d+)?\.pdf$#', $file ) ) {
+			continue;
+		}
+
+		$dir = realpath( dirname( $base . '/' . $file ) );
+
+		if ( $dir && ( $dir === $base || str_starts_with( $dir, $base . DIRECTORY_SEPARATOR ) ) ) {
+			wp_delete_file( $dir . '/' . basename( $file ) );
 		}
 	}
 
 	$wpdb->query( $wpdb->prepare( "DELETE FROM {$prefix}postmeta WHERE meta_key LIKE %s", $wpdb->esc_like( '_equalify_iris_' ) . '%' ) );
 
-	// Every option of ours on this site, including any left by 0.1.x.
-	$wpdb->query( $wpdb->prepare( "DELETE FROM {$prefix}options WHERE option_name LIKE %s", $wpdb->esc_like( 'equalify_iris_' ) . '%' ) );
+	// Every option of ours on this site, including any left by 0.1.x, and its
+	// transients (on a single site, site transients are here too).
+	foreach ( array( 'equalify_iris_', '_transient_equalify_iris_', '_transient_timeout_equalify_iris_', '_site_transient_equalify_iris_', '_site_transient_timeout_equalify_iris_' ) as $like ) {
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$prefix}options WHERE option_name LIKE %s", $wpdb->esc_like( $like ) . '%' ) );
+	}
 	// phpcs:enable
 };
 
@@ -65,14 +78,20 @@ if ( is_multisite() ) {
 	// Every network setting, including those left by 0.1.x. One of those,
 	// `equalify_iris_token`, held a live GitHub credential in builds from before
 	// Iris removed its sign-in, so it must not outlive the plugin.
-	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sitemeta} WHERE meta_key LIKE %s", $wpdb->esc_like( 'equalify_iris_' ) . '%' ) );
+	foreach ( array( 'equalify_iris_', '_site_transient_equalify_iris_', '_site_transient_timeout_equalify_iris_' ) as $equalify_iris_like ) {
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->sitemeta} WHERE meta_key LIKE %s", $wpdb->esc_like( $equalify_iris_like ) . '%' ) );
+	}
 	// phpcs:enable
 } else {
 	$equalify_iris_clean_site( $wpdb->prefix, wp_get_upload_dir()['basedir'] );
 }
 
 wp_clear_scheduled_hook( 'equalify_iris_run' );
-wp_cache_flush();
+
+// No wp_cache_flush(): on a shared object cache it would empty every site's
+// cache at once. Copies of our options left in it are read by nothing now the
+// plugin is gone, and expire. This request's own are dropped.
+wp_cache_delete( 'alloptions', 'options' );
 
 // The tables 0.1.x kept its documents in.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery

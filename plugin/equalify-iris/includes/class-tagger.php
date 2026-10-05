@@ -135,6 +135,7 @@ class Equalify_Iris_Tagger {
 		}
 
 		delete_post_meta( $attachment_id, self::META_STAGE );
+		wp_cache_delete( 'counts', 'equalify_iris' );
 	}
 
 	public static function error( int $attachment_id ): string {
@@ -190,10 +191,10 @@ class Equalify_Iris_Tagger {
 	 *                       False when the attachment itself is being deleted.
 	 */
 	public static function remove( int $attachment_id, bool $remember = true ): void {
-		$file = (string) get_post_meta( $attachment_id, self::META_FILE, true );
+		$path = self::tagged_path( (string) get_post_meta( $attachment_id, self::META_FILE, true ) );
 
-		if ( '' !== $file ) {
-			wp_delete_file( trailingslashit( wp_get_upload_dir()['basedir'] ) . $file );
+		if ( '' !== $path ) {
+			wp_delete_file( $path );
 		}
 
 		$original = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
@@ -202,6 +203,7 @@ class Equalify_Iris_Tagger {
 		if ( isset( $map[ $original ] ) ) {
 			unset( $map[ $original ] );
 			Equalify_Iris_Settings::set_link_map( $map );
+			self::links_changed( $attachment_id );
 		}
 
 		$session = (string) get_post_meta( $attachment_id, self::META_SESSION, true );
@@ -260,7 +262,13 @@ class Equalify_Iris_Tagger {
 			Equalify_Iris_Discovery::catch_up( $reading );
 			$done['queued'] = self::scan();
 
-			$ready = self::check_working( $done );
+			// Iris would not let us in a moment ago, and would say the same again:
+			// nothing changes for any PDF until the settings do, or a while passes.
+			if ( Equalify_Iris_Settings::refused_recently() ) {
+				return $done;
+			}
+
+			$ready = self::check_working( $done, $deadline );
 
 			self::upload_queued( $done, $deadline );
 
@@ -295,14 +303,24 @@ class Equalify_Iris_Tagger {
 	}
 
 	/** @return int A PDF whose tags are ready to fetch, or 0. */
-	private static function check_working( array &$done ): int {
+	private static function check_working( array &$done, int $deadline ): int {
 		$ready = 0;
 
 		foreach ( self::ids( self::WORKING, 10 ) as $id ) {
+			// Each check may wait its full timeout. The rest wait for the next run.
+			if ( $deadline - time() < Equalify_Iris_API_Client::TIMEOUT_STATUS + 5 ) {
+				break;
+			}
+
 			$session = (string) get_post_meta( $id, self::META_SESSION, true );
 			$state   = Equalify_Iris_API_Client::get_session( $session );
 
 			if ( is_wp_error( $state ) ) {
+				if ( Equalify_Iris_API_Client::is_refused( $state ) ) {
+					self::retry_or_fail( $id, $state, $done );
+					return 0;
+				}
+
 				if ( 404 === Equalify_Iris_API_Client::status( $state ) ) {
 					// Iris no longer has the session. Upload it again.
 					delete_post_meta( $id, self::META_SESSION );
@@ -312,6 +330,8 @@ class Equalify_Iris_Tagger {
 				self::retry_or_fail( $id, $state, $done );
 				continue;
 			}
+
+			Equalify_Iris_Settings::clear_refused();
 
 			$status = (string) ( $state['status'] ?? '' );
 
@@ -346,7 +366,8 @@ class Equalify_Iris_Tagger {
 			return;
 		}
 
-		$result = Equalify_Iris_API_Client::tagged_pdf( $session, $timeout );
+		$original = (string) get_attached_file( $id );
+		$result   = Equalify_Iris_API_Client::tagged_pdf( $session, $timeout, is_file( $original ) ? (int) filesize( $original ) : 0 );
 
 		if ( is_wp_error( $result ) ) {
 			self::retry_or_fail( $id, $result, $done );
@@ -384,18 +405,23 @@ class Equalify_Iris_Tagger {
 			return new WP_Error( 'equalify_iris_file_missing', __( 'The original PDF is no longer on the server.', 'equalify-iris' ) );
 		}
 
-		// Replace an earlier tagged copy rather than leave it lying about.
-		$old = (string) get_post_meta( $id, self::META_FILE, true );
+		$dir      = dirname( $path );
+		$old_path = self::tagged_path( (string) get_post_meta( $id, self::META_FILE, true ) );
 
-		if ( '' !== $old ) {
-			wp_delete_file( trailingslashit( wp_get_upload_dir()['basedir'] ) . $old );
-		}
+		// An earlier tagged copy in the same folder is replaced under its own name,
+		// so links already in page caches keep working.
+		$name = '' !== $old_path && dirname( $old_path ) === $dir
+			? basename( $old_path )
+			: wp_unique_filename( $dir, pathinfo( $path, PATHINFO_FILENAME ) . '-accessible.pdf' );
 
-		$dir  = dirname( $path );
-		$name = wp_unique_filename( $dir, pathinfo( $path, PATHINFO_FILENAME ) . '-accessible.pdf' );
+		// Written beside it first, then moved into place, so a full disk or a
+		// killed process never leaves the link map pointing at half a file.
+		$temp    = $dir . '/.' . $name . '.' . wp_generate_password( 8, false ) . '.tmp';
+		$written = file_put_contents( $temp, $pdf ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 
-		if ( false === file_put_contents( $dir . '/' . $name, $pdf ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
-			return new WP_Error( 'equalify_iris_write_failed', __( 'The tagged PDF could not be saved in the uploads folder. Check that it is writable.', 'equalify-iris' ) );
+		if ( strlen( $pdf ) !== $written || ! rename( $temp, $dir . '/' . $name ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+			wp_delete_file( $temp );
+			return new WP_Error( 'equalify_iris_write_failed', __( 'The tagged PDF could not be saved in the uploads folder. Check that it is writable and has space.', 'equalify-iris' ) );
 		}
 
 		$folder = dirname( $original );
@@ -407,7 +433,59 @@ class Equalify_Iris_Tagger {
 		$map[ $original ] = $tagged;
 		Equalify_Iris_Settings::set_link_map( $map );
 
+		// Only now, and only if the new copy went somewhere else: the original
+		// moved folder since it was last tagged.
+		if ( '' !== $old_path && $old_path !== $dir . '/' . $name ) {
+			wp_delete_file( $old_path );
+		}
+
+		self::links_changed( $id );
+
 		return true;
+	}
+
+	/**
+	 * The full path of a stored tagged copy, or '' when the stored value is not
+	 * one this plugin could have written: anything outside the uploads folder, or
+	 * not named `…-accessible.pdf`. Nothing is ever deleted from a path that fails.
+	 */
+	public static function tagged_path( string $file ): string {
+		if ( '' === $file || false !== strpos( $file, "\0" ) || ! preg_match( '#^(?:[^/\\\\]+/)*[^/\\\\]+-accessible(?:-\d+)?\.pdf$#', $file ) ) {
+			return '';
+		}
+
+		$base = wp_get_upload_dir()['basedir'];
+		$path = trailingslashit( $base ) . $file;
+		$real = realpath( dirname( $path ) );
+
+		if ( false === $real || 0 !== strpos( trailingslashit( $real ), trailingslashit( (string) realpath( $base ) ) ) ) {
+			return '';
+		}
+
+		return $real . '/' . basename( $path );
+	}
+
+	/**
+	 * A PDF's links now point somewhere else. Ask page caches to drop the posts
+	 * that link to it, so visitors get the new link without waiting for the cache
+	 * to expire. A handful at a time, never in bulk: each one is a CDN purge on
+	 * hosts like Pantheon. Menus and widgets show on every page and cannot be
+	 * purged this way; those wait for the cache.
+	 */
+	private static function links_changed( int $attachment_id ): void {
+		$posts = get_post_meta( $attachment_id, Equalify_Iris_Discovery::META );
+
+		foreach ( array_slice( array_unique( array_map( 'intval', (array) $posts ) ), 0, 20 ) as $post_id ) {
+			clean_post_cache( $post_id );
+		}
+
+		/**
+		 * After a PDF's tagged copy is saved or deleted, so links to it changed.
+		 * For purging a page cache that clean_post_cache() does not reach.
+		 *
+		 * @param int $attachment_id The PDF.
+		 */
+		do_action( 'equalify_iris_links_changed', $attachment_id );
 	}
 
 	private static function upload_queued( array &$done, int $deadline ): void {
@@ -461,6 +539,8 @@ class Equalify_Iris_Tagger {
 				continue;
 			}
 
+			Equalify_Iris_Settings::clear_refused();
+
 			update_post_meta( $id, self::META_SESSION, (string) $session['session_id'] );
 			self::set_status( $id, self::WORKING );
 
@@ -473,6 +553,13 @@ class Equalify_Iris_Tagger {
 
 	/** Stop on a permanent refusal; otherwise try again next run, up to a limit. */
 	private static function retry_or_fail( int $id, WP_Error $error, array &$done ): void {
+		// Not this PDF's fault, so it costs the PDF nothing: the whole network
+		// pauses, and the screens say why (see work()).
+		if ( Equalify_Iris_API_Client::is_refused( $error ) ) {
+			Equalify_Iris_Settings::set_refused( $error->get_error_message() );
+			return;
+		}
+
 		if ( Equalify_Iris_API_Client::is_permanent( $error ) ) {
 			self::fail( $id, $error->get_error_message(), $done );
 			return;

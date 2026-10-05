@@ -28,6 +28,9 @@ class Equalify_Iris_Settings {
 
 	const DEFAULT_API_URL = 'https://iris.equalify.uic.edu/v1';
 
+	/** Above this, the link map is no longer autoloaded (see set_link_map()). */
+	const MAP_AUTOLOAD_BYTES = 65536;
+
 	/**
 	 * The most pages Iris converts in one PDF. This mirrors the server's own cap,
 	 * so a longer PDF is refused here with a clear reason instead of uploaded.
@@ -52,6 +55,69 @@ class Equalify_Iris_Settings {
 
 	public static function set_api_url( string $url ): void {
 		update_site_option( self::PREFIX . 'api_url', untrailingslashit( $url ) );
+		self::clear_refused();
+	}
+
+	/**
+	 * https, or http to this server itself: loopback addresses, `localhost`, and
+	 * Docker's `host.docker.internal`, for a copy of Iris running alongside. Any
+	 * other http address only with this in wp-config.php:
+	 *
+	 *     define( 'EQUALIFY_IRIS_ALLOW_HTTP', true );
+	 */
+	public static function url_is_allowed( string $url ): bool {
+		$scheme = strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) );
+		$host   = strtolower( trim( (string) wp_parse_url( $url, PHP_URL_HOST ), '[]' ) );
+
+		if ( '' === $host ) {
+			return false;
+		}
+
+		if ( 'https' === $scheme ) {
+			return true;
+		}
+
+		if ( 'http' !== $scheme ) {
+			return false;
+		}
+
+		if ( defined( 'EQUALIFY_IRIS_ALLOW_HTTP' ) && EQUALIFY_IRIS_ALLOW_HTTP ) {
+			return true;
+		}
+
+		return in_array( $host, array( 'localhost', '::1', 'host.docker.internal' ), true )
+			|| str_ends_with( $host, '.localhost' )
+			|| 1 === preg_match( '/^127\.\d+\.\d+\.\d+$/', $host );
+	}
+
+	/** Seconds the tagger waits before trying again after Iris refused to let us in. */
+	const REFUSED_PAUSE = 15 * MINUTE_IN_SECONDS;
+
+	/**
+	 * Why Iris last refused to let us in (a 401 or 403, or an address that is not
+	 * allowed), or '' when it has not since the settings last changed. While it is
+	 * recent, no site sends Iris anything.
+	 */
+	public static function refused(): string {
+		$refused = get_site_option( self::PREFIX . 'refused' );
+
+		return is_array( $refused ) ? (string) ( $refused['message'] ?? '' ) : '';
+	}
+
+	public static function refused_recently(): bool {
+		$refused = get_site_option( self::PREFIX . 'refused' );
+
+		return is_array( $refused ) && time() - (int) ( $refused['at'] ?? 0 ) < self::REFUSED_PAUSE;
+	}
+
+	public static function set_refused( string $message ): void {
+		update_site_option( self::PREFIX . 'refused', array( 'message' => $message, 'at' => time() ) );
+	}
+
+	public static function clear_refused(): void {
+		if ( false !== get_site_option( self::PREFIX . 'refused' ) ) {
+			delete_site_option( self::PREFIX . 'refused' );
+		}
 	}
 
 	/**
@@ -77,6 +143,7 @@ class Equalify_Iris_Settings {
 
 	public static function set_api_token( string $token ): void {
 		update_site_option( self::PREFIX . 'api_token', $token );
+		self::clear_refused();
 	}
 
 	/** Has a super admin turned on automatic tagging for every site? */
@@ -151,7 +218,12 @@ class Equalify_Iris_Settings {
 		return (array) get_option( self::PREFIX . 'map', array() );
 	}
 
+	/**
+	 * Autoloaded, because every page visitors load reads it, unless it grows
+	 * large enough (thousands of tagged PDFs) that loading it with every other
+	 * request costs more than the one query it saves.
+	 */
 	public static function set_link_map( array $map ): void {
-		update_option( self::PREFIX . 'map', $map, true );
+		update_option( self::PREFIX . 'map', $map, strlen( serialize( $map ) ) < self::MAP_AUTOLOAD_BYTES ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions
 	}
 }

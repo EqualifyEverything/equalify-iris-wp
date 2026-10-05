@@ -197,17 +197,17 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 	protected function column_status( $item ): string {
 		$status = Equalify_Iris_Tagger::status( $item );
 		$labels = array(
-			Equalify_Iris_Tagger::TAGGED  => array( 'yes-alt', __( 'Tagged', 'equalify-iris' ), '' ),
-			Equalify_Iris_Tagger::QUEUED  => array( 'update', __( 'Being tagged', 'equalify-iris' ), '' ),
-			Equalify_Iris_Tagger::WORKING => array( 'update', __( 'Being tagged', 'equalify-iris' ), '' ),
-			Equalify_Iris_Tagger::FAILED  => array( 'warning', __( 'Could not be tagged', 'equalify-iris' ), '#b32d2e' ),
+			Equalify_Iris_Tagger::TAGGED  => array( 'yes-alt', __( 'Tagged', 'equalify-iris' ), false ),
+			Equalify_Iris_Tagger::QUEUED  => array( 'update', __( 'Being tagged', 'equalify-iris' ), false ),
+			Equalify_Iris_Tagger::WORKING => array( 'update', __( 'Being tagged', 'equalify-iris' ), false ),
+			Equalify_Iris_Tagger::FAILED  => array( 'warning', __( 'Could not be tagged', 'equalify-iris' ), true ),
 		);
 
-		list( $icon, $label, $color ) = $labels[ $status ] ?? array( '', __( 'Not tagged', 'equalify-iris' ), '' );
+		list( $icon, $label, $bad ) = $labels[ $status ] ?? array( '', __( 'Not tagged', 'equalify-iris' ), false );
 
 		$html = sprintf(
 			'<strong%s>%s%s</strong>',
-			$color ? ' style="color:' . esc_attr( $color ) . '"' : '',
+			$bad ? ' class="equalify-iris-problem"' : '',
 			$icon ? '<span class="dashicons dashicons-' . esc_attr( $icon ) . '" aria-hidden="true"></span> ' : '',
 			esc_html( $label )
 		);
@@ -219,7 +219,7 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 		$problem = self::problem( $item );
 
 		if ( '' !== $problem ) {
-			$html .= '<br><span style="color:#b32d2e">' . esc_html( $problem ) . '</span>';
+			$html .= '<br><span class="equalify-iris-problem">' . esc_html( $problem ) . '</span>';
 		}
 
 		foreach ( self::notes( $item ) as $note ) {
@@ -381,9 +381,9 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 				esc_html__( '(opens in a new tab)', 'equalify-iris' )
 			);
 			$actions['delete'] = sprintf(
-				'<a href="%s" class="submitdelete" onclick="return confirm( %s );">%s</a>',
+				'<a href="%s" class="submitdelete equalify-iris-confirm" data-confirm="%s">%s</a>',
 				esc_url( self::action_url( 'equalify_iris_remove', $attachment_id ) ),
-				esc_attr( wp_json_encode( __( 'Delete the Iris-tagged version? Links will point at the original PDF again.', 'equalify-iris' ) ) ),
+				esc_attr__( 'Delete the Iris-tagged version? Links will point at the original PDF again.', 'equalify-iris' ),
 				esc_html__( 'Delete Iris-Tagged Version', 'equalify-iris' )
 			);
 		}

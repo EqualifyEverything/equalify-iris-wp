@@ -26,7 +26,8 @@ PDFs say "Queued" and never move, or a site's list says it is still reading.
 
 2. **Run it by hand** to see what happens: `wp equalify-iris run`. It says how many sites it
    visited and what it did. "Another run is going" means one is already working; it finishes within
-   two minutes, and a run that died hands over its lock after about three and a half.
+   two minutes. A run that dies lets go of its lock at once (it is a database lock, released when
+   the connection closes); on a database without them, after about three and a half minutes.
 
 3. **Is Iris full?** At most four PDFs are at Iris at once across the network
    (`EQUALIFY_IRIS_MAX_AT_IRIS`), so on a network with thousands queued, a PDF can wait days for its
@@ -42,7 +43,12 @@ it, which can take minutes more.
   Where the host allows longer PHP processes, raise `EQUALIFY_IRIS_RUN_SECONDS` (keep it 30
   seconds under the limit). Otherwise the PDF has to wait until Iris can build tagged PDFs in the
   background.
-- **A run died.** The next run takes over its lock once it is stale, then carries on.
+- **A run died.** The next run carries on where it left off.
+- **"Equalify Iris refused to let this network in."** Iris answered 401 or 403: it wants a token,
+  or a different one. Nothing is sent to Iris until a network admin saves the settings, apart from
+  one try every 15 minutes. PDFs keep their place in line and no tries are counted against them.
+- **"The API address must start with https://."** See the API address in
+  [DEVELOPING](DEVELOPING.md#the-iris-api).
 - The Equalify Iris screen shows the last problem under the status while it is retrying. Ten
   problems in a row and the PDF is marked failed.
 

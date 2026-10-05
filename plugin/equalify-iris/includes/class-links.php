@@ -38,10 +38,11 @@ class Equalify_Iris_Links {
 	}
 
 	/**
-	 * `href` and `data` attributes ending in .pdf, with any query string or
-	 * fragment after it. Groups: 1 attribute, 2 `=`, 3 quote, 4 URL, 5 query.
+	 * `href`, `data` and `src` attributes ending in .pdf (links, objects, and
+	 * embeds or iframes showing the PDF), with any query string or fragment after
+	 * it. Groups: 1 attribute, 2 `=`, 3 quote, 4 URL, 5 query.
 	 */
-	const PATTERN = '#\b(href|data)(\s*=\s*)(["\'])([^"\']+?\.pdf)((?:[?\#][^"\']*)?)\3#i';
+	const PATTERN = '#\b(href|data|src)(\s*=\s*)(["\'])([^"\']+?\.pdf)((?:[?\#][^"\']*)?)\3#i';
 
 	/**
 	 * The file a URL points at, relative to this site's uploads folder, or ''
@@ -87,7 +88,7 @@ class Equalify_Iris_Links {
 
 		$base = wp_get_upload_dir()['baseurl'];
 
-		return preg_replace_callback(
+		$swapped = preg_replace_callback(
 			self::PATTERN,
 			static function ( array $m ) use ( $map, $base ) {
 				$file = self::upload_file( $m[4] );
@@ -102,5 +103,9 @@ class Equalify_Iris_Links {
 			},
 			$html
 		);
+
+		// null when PCRE gives up, on a very large page, say. The page as it was
+		// beats an empty one.
+		return null === $swapped ? $html : $swapped;
 	}
 }

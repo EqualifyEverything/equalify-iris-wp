@@ -25,6 +25,10 @@ class Equalify_Iris_CLI {
 	 */
 	public function status(): void {
 		WP_CLI::line( 'API address:          ' . Equalify_Iris_Settings::api_url() );
+
+		if ( '' !== Equalify_Iris_Settings::refused() ) {
+			WP_CLI::warning( 'Iris refused to let this network in, so nothing is sent until the settings change: ' . Equalify_Iris_Settings::refused() );
+		}
 		WP_CLI::line( 'Token:                ' . ( '' !== Equalify_Iris_Settings::api_token() ? 'set' : 'none' ) );
 		WP_CLI::line( 'Automatic, network:   ' . ( Equalify_Iris_Settings::network_auto() ? 'on' : 'off' ) );
 		WP_CLI::line( 'Automatic, this site: ' . ( Equalify_Iris_Settings::site_auto() ? 'on' : 'off' ) );
@@ -98,8 +102,20 @@ class Equalify_Iris_CLI {
 	 * : Attachment ids.
 	 */
 	public function remove( array $args ): void {
-		foreach ( $args as $id ) {
-			Equalify_Iris_Tagger::remove( (int) $id );
+		foreach ( $args as $arg ) {
+			$id = absint( $arg );
+
+			if ( ! $id || (string) $id !== (string) $arg || ! Equalify_Iris_Tagger::is_pdf( $id ) ) {
+				WP_CLI::warning( "{$arg} is not a PDF in this site's media library." );
+				continue;
+			}
+
+			if ( ! get_post_meta( $id, Equalify_Iris_Tagger::META_FILE, true ) ) {
+				WP_CLI::warning( "{$id} has no Iris-tagged version." );
+				continue;
+			}
+
+			Equalify_Iris_Tagger::remove( $id );
 			WP_CLI::log( "Removed the Iris-tagged version of {$id}." );
 		}
 	}

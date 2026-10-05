@@ -48,6 +48,7 @@ class Equalify_Iris_Admin {
 		add_action( 'network_admin_edit_equalify_iris_tag_site', array( __CLASS__, 'handle_tag_site' ) );
 		add_action( 'network_admin_edit_equalify_iris_read_site', array( __CLASS__, 'handle_read_site' ) );
 
+		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'assets' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'untagged_notice' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'result_notice' ) );
 		add_action( 'network_admin_notices', array( __CLASS__, 'result_notice' ) );
@@ -181,6 +182,58 @@ class Equalify_Iris_Admin {
 		add_action( 'load-' . $hook, array( __CLASS__, 'handle_bulk' ) );
 	}
 
+	/** The list's colours and its delete confirmation, on this screen only. */
+	public static function assets( string $hook ): void {
+		if ( 'toplevel_page_' . self::SLUG !== $hook || is_network_admin() ) {
+			return;
+		}
+
+		wp_add_inline_style( 'common', '.equalify-iris-problem { color: #b32d2e; }' );
+		wp_add_inline_script(
+			'common',
+			'document.addEventListener( "click", function ( e ) {
+				var link = e.target.closest && e.target.closest( "a.equalify-iris-confirm" );
+				if ( link && ! window.confirm( link.getAttribute( "data-confirm" ) ) ) {
+					e.preventDefault();
+				}
+			} );'
+		);
+	}
+
+	/**
+	 * Said wherever someone decides to send PDFs automatically. Iris files its
+	 * conversion problems as public GitHub issues, which can quote the document,
+	 * and that cannot be turned off.
+	 */
+	private static function public_issue_warning(): void {
+		echo ' <strong>' . esc_html__( 'When Iris has trouble converting a PDF, it reports the problem as a public GitHub issue, which can quote parts of the document.', 'equalify-iris' ) . '</strong>';
+	}
+
+	/** Iris would not let this network in. Shown on both screens, until it does. */
+	private static function refused_notice(): void {
+		$refused = Equalify_Iris_Settings::refused();
+
+		if ( '' === $refused ) {
+			return;
+		}
+
+		$fix = is_network_admin()
+			? __( 'Check the API address and token below, then save. Until then, Iris is only tried again every 15 minutes, and PDFs keep their place in line.', 'equalify-iris' )
+			: __( 'A network administrator needs to check the Equalify Iris settings. Until then, Iris is only tried again every 15 minutes, and PDFs keep their place in line.', 'equalify-iris' );
+
+		printf(
+			'<div class="notice notice-error inline"><p>%s</p><p>%s</p></div>',
+			esc_html(
+				sprintf(
+					/* translators: %s: Iris's own message. */
+					__( 'Equalify Iris refused to let this network in: %s', 'equalify-iris' ),
+					$refused
+				)
+			),
+			esc_html( $fix )
+		);
+	}
+
 	public static function render_site_page(): void {
 		// Opening the screen is what starts a site reading its content.
 		if ( ! Equalify_Iris_Discovery::indexed() ) {
@@ -198,6 +251,8 @@ class Equalify_Iris_Admin {
 			<h1><?php esc_html_e( 'Equalify Iris', 'equalify-iris' ); ?></h1>
 
 			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from this site’s published pages, posts, menus and widgets, so screen readers can read them in order, with headings, lists and tables. The original file is kept; links on this site point at the tagged copy instead. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
+
+			<?php self::refused_notice(); ?>
 
 			<?php if ( ! Equalify_Iris_Settings::auto_enabled() && $untagged ) : ?>
 				<div class="notice notice-warning inline"><p><?php esc_html_e( 'You are currently displaying inaccessible PDFs. Turn on automatic PDF tagging below, or tag them one by one.', 'equalify-iris' ); ?></p></div>
@@ -220,6 +275,7 @@ class Equalify_Iris_Admin {
 								</label>
 								<p class="description" id="equalify-iris-auto-help">
 									<?php esc_html_e( 'The PDFs below are tagged a few at a time, and new ones as soon as a page linking to them is published.', 'equalify-iris' ); ?>
+									<?php self::public_issue_warning(); ?>
 								</p>
 							</td>
 						</tr>
@@ -410,6 +466,8 @@ class Equalify_Iris_Admin {
 
 			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from each site’s published pages, posts, menus and widgets. Links point at the tagged copy; the original file is kept. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
 
+			<?php self::refused_notice(); ?>
+
 			<form method="post" action="<?php echo esc_url( network_admin_url( 'edit.php?action=equalify_iris_save_network' ) ); ?>">
 				<?php wp_nonce_field( 'equalify_iris_save_network' ); ?>
 
@@ -423,6 +481,7 @@ class Equalify_Iris_Admin {
 							</label>
 							<p class="description" id="equalify-iris-network-auto-help">
 								<?php esc_html_e( 'Every public PDF on every site is tagged, and site admins no longer see the setting or the notice asking them to turn it on. When this is off, each site decides for itself.', 'equalify-iris' ); ?>
+								<?php self::public_issue_warning(); ?>
 							</p>
 						</td>
 					</tr>
@@ -434,7 +493,7 @@ class Equalify_Iris_Admin {
 								<?php
 								printf(
 									/* translators: %s: the default API address. */
-									esc_html__( 'Only change this if you run your own Equalify Iris. Include the version, for example %s', 'equalify-iris' ),
+									esc_html__( 'Only change this if you run your own Equalify Iris. It must use https://. Include the version, for example %s', 'equalify-iris' ),
 									'<code>' . esc_html( Equalify_Iris_Settings::DEFAULT_API_URL ) . '</code>'
 								);
 								?>
@@ -532,11 +591,12 @@ class Equalify_Iris_Admin {
 					switch_to_blog( (int) $site->blog_id );
 
 					$name     = get_bloginfo( 'name' );
-					$public   = Equalify_Iris_Discovery::count( 'public' );
-					$untagged = Equalify_Iris_Discovery::count( 'untagged' );
-					$tagged   = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::TAGGED );
-					$working  = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::QUEUED ) + Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::WORKING );
-					$failed   = Equalify_Iris_Discovery::count( 'public', Equalify_Iris_Tagger::FAILED );
+					$counts   = Equalify_Iris_Discovery::counts();
+					$public   = $counts['public'];
+					$untagged = $counts['untagged'];
+					$tagged   = $counts['tagged'];
+					$working  = $counts['working'];
+					$failed   = $counts['failed'];
 					$auto     = Equalify_Iris_Settings::auto_enabled();
 					$indexed  = Equalify_Iris_Discovery::indexed();
 					$started  = Equalify_Iris_Discovery::started();
@@ -703,8 +763,16 @@ class Equalify_Iris_Admin {
 		self::require_cap( 'manage_network_options' );
 		check_admin_referer( 'equalify_iris_save_network' );
 
-		$url = isset( $_POST['api_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['api_url'] ) ) ) : '';
-		Equalify_Iris_Settings::set_api_url( '' !== $url ? $url : Equalify_Iris_Settings::DEFAULT_API_URL );
+		$url = isset( $_POST['api_url'] ) ? esc_url_raw( trim( wp_unslash( $_POST['api_url'] ) ), array( 'http', 'https' ) ) : '';
+		$url = '' !== $url ? $url : Equalify_Iris_Settings::DEFAULT_API_URL;
+
+		// Kept as it was, rather than saved and then refused on every request.
+		if ( ! Equalify_Iris_Settings::url_is_allowed( $url ) ) {
+			set_site_transient( 'equalify_iris_check', __( 'The API address was not saved: it must start with https://. Plain http is only allowed to this server itself, or with EQUALIFY_IRIS_ALLOW_HTTP in wp-config.php. Nothing else was saved either.', 'equalify-iris' ), MINUTE_IN_SECONDS );
+			self::redirect( self::network_page_url(), 'check-failed' );
+		}
+
+		Equalify_Iris_Settings::set_api_url( $url );
 
 		if ( ! empty( $_POST['forget_token'] ) ) {
 			Equalify_Iris_Settings::set_api_token( '' );

@@ -100,7 +100,10 @@ quicker: a run reads roughly 20 seconds' worth of posts on each site before movi
 
 - **Iris reports problems as public GitHub issues**, which can quote parts of the document. This
   cannot be turned off, and it is why only PDFs linked from published pages are sent. A PDF that
-  should not be public should not be linked from a published page.
+  should not be public should not be linked from a published page. The screens say so next to the
+  switches that turn automatic tagging on.
+- **The deployment you point it at is trusted.** Its tagged PDFs are served in place of the
+  originals. The API address must use https.
 - **PDFs over 25 pages or 50 MB are not tagged.** The plugin checks before uploading and says why.
 - **Iris hands back a tagged PDF in a single request that can take minutes.** A run waits as long
   as it has left, about 80 seconds on Pantheon. A PDF Iris takes longer than that over is tried

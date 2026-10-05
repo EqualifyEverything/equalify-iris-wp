@@ -89,14 +89,26 @@ Things that are easy to get wrong:
   only be tagged with a longer `EQUALIFY_IRIS_RUN_SECONDS` on a host that allows it, or once Iris
   can build the tagged PDF in the background.
 - **`503 busy` and `409 invalid_state` mean "not yet".** They come with no penalty.
-- **`400`, `401`, `403`, `413` and `422` are permanent.** Retrying sends the same bytes for the same
-  answer. The exception is a `401` saying Iris could not authenticate to GitHub: that is the
-  deployment's own credential, and it recovers by itself.
+- **`400`, `413` and `422` are permanent.** Retrying sends the same bytes for the same answer.
+- **`401` and `403` are about the network, not the PDF**: no token, or the wrong one. They cost the
+  PDF nothing. The network option `equalify_iris_refused` records Iris's sentence, both screens show
+  it, and nothing is sent to Iris for 15 minutes, or until the API address or token is saved. The
+  exception is a `401` saying Iris could not authenticate to GitHub: that is the deployment's own
+  credential, it recovers by itself, and it is retried like any other passing problem.
 - **A tagged PDF can have warnings.** They are codes (`missing_alt`, `page_not_tagged`,
   `font_not_embedded`, …). `Equalify_Iris_List_Table::notes()` turns them into sentences; an
   unknown code is shown as it is.
-- **Uploads stream from disk with cURL**, so memory stays flat. The WP HTTP fallback reads the file
-  into memory.
+- **Uploads stream from disk with cURL**, so memory stays flat. cURL skips WordPress's HTTP API, so
+  when a site uses it for anything (`WP_HTTP_BLOCK_EXTERNAL`, a proxy, a `pre_http_request` or
+  `http_request_args` filter) the upload goes through `wp_remote_post()` instead, which reads the
+  file into memory.
+- **The API address must be https**, except to this server (`localhost`, `127.x.x.x`, `::1`,
+  `*.localhost`, `host.docker.internal`), or with `define( 'EQUALIFY_IRIS_ALLOW_HTTP', true );`. It
+  is checked when saved and again before every request.
+- **What comes back from Iris is trusted.** The tagged PDF replaces the original for visitors. It
+  is checked for `%PDF-` and `%%EOF` and a sensible size, written to a temporary file and renamed
+  into place, but nothing checks what is inside it. Point the plugin only at a deployment you
+  trust as much as someone who can upload media.
 
 ## Conventions
 
@@ -116,6 +128,7 @@ Match the code that is there:
 | Trap | What happens |
 | --- | --- |
 | Running the job without the lock | Two runs upload the same PDF twice. Always go through `Equalify_Iris_Runner::run()`. |
+| `wp_cache_flush()` | On a shared object cache it empties every site's cache. Delete the keys you changed. |
 | Trusting `switch_to_blog()` | The switched-to site's plugins and theme are not loaded, so its custom post types, taxonomies and sidebars do not exist, and `wp_get_upload_dir()` builds the URL from the main site's `WP_CONTENT_URL`. Use `Discovery::profile()` and `Links::upload_file()`, which allow for both. |
 | `get_site_meta()` for `equalify_iris_due` | The job queries that table in SQL, so a cached copy is always stale. `Runner::wake()` and `set_due()` write it directly. |
 | `clean_post_cache()` in a loop | Page-cache plugins purge the CDN for every post. The runner flushes the runtime cache instead. |
