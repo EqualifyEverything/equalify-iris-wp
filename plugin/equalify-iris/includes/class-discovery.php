@@ -181,7 +181,7 @@ class Equalify_Iris_Discovery {
 		// Read with the wrong types until now: read the posts, or just the
 		// site-wide places, again.
 		if ( ( $saved['types'] ?? null ) !== $now['types'] || ( $saved['taxonomies'] ?? null ) !== $now['taxonomies'] ) {
-			update_option( self::OPTION, self::generation() . ':0', false );
+			update_option( self::OPTION, self::generation() . ':0', true );
 		}
 
 		update_option( self::STALE, 1, false );
@@ -253,7 +253,7 @@ class Equalify_Iris_Discovery {
 			}
 
 			if ( count( $posts ) > self::MAX_CHANGED_POSTS ) {
-				update_option( self::OPTION, self::generation() . ':0', false );
+				update_option( self::OPTION, self::generation() . ':0', true );
 				Equalify_Iris_Runner::wake();
 			} else {
 				foreach ( array_keys( $posts ) as $post_id ) {
@@ -302,6 +302,8 @@ class Equalify_Iris_Discovery {
 
 		$meta = array();
 
+		// All of a post's meta at once comes back as stored, serialized arrays and
+		// all, so this is the one unserialize, not a second.
 		foreach ( (array) get_post_meta( $post->ID ) as $key => $values ) {
 			$meta[ $key ] = array_map( 'maybe_unserialize', (array) $values );
 		}
@@ -830,7 +832,7 @@ class Equalify_Iris_Discovery {
 
 		if ( '' === self::cursor() ) {
 			Equalify_Iris_Runner::mark_used();
-			update_option( self::OPTION, self::generation() . ':0', false );
+			update_option( self::OPTION, self::generation() . ':0', true );
 			self::index_places();
 		} elseif ( get_option( self::STALE ) ) {
 			self::index_places();
@@ -856,7 +858,7 @@ class Equalify_Iris_Discovery {
 				}
 			}
 
-			update_option( self::OPTION, self::generation() . ':' . ( count( $ids ) < self::BATCH ? 'done' : end( $ids ) ), false );
+			update_option( self::OPTION, self::generation() . ':' . ( count( $ids ) < self::BATCH ? 'done' : end( $ids ) ), true );
 		}
 	}
 
@@ -938,6 +940,56 @@ class Equalify_Iris_Discovery {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} a WHERE $where", $args ) );
+	}
+
+	/**
+	 * The current site's public PDFs, counted by status in one query, for the
+	 * network screen, which shows a page of sites at a time. Kept for a minute,
+	 * and forgotten when a PDF's status changes.
+	 *
+	 * @return array{public: int, untagged: int, tagged: int, working: int, failed: int}
+	 */
+	public static function counts(): array {
+		global $wpdb;
+
+		$counts = wp_cache_get( 'counts', 'equalify_iris' );
+
+		if ( is_array( $counts ) ) {
+			return $counts;
+		}
+
+		list( $where, $args ) = self::where( 'public' );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT COALESCE( t.meta_value, '' ) AS status, COUNT(*) AS n FROM {$wpdb->posts} a
+				LEFT JOIN {$wpdb->postmeta} t ON t.post_id = a.ID AND t.meta_key = %s
+				WHERE $where GROUP BY COALESCE( t.meta_value, '' )",
+				array_merge( array( Equalify_Iris_Tagger::META_STATUS ), $args )
+			)
+		);
+		// phpcs:enable
+
+		$by = array();
+
+		foreach ( (array) $rows as $row ) {
+			$by[ (string) $row->status ] = (int) $row->n;
+		}
+
+		$public = array_sum( $by );
+		$tagged = $by[ Equalify_Iris_Tagger::TAGGED ] ?? 0;
+		$counts = array(
+			'public'   => $public,
+			'untagged' => $public - $tagged,
+			'tagged'   => $tagged,
+			'working'  => ( $by[ Equalify_Iris_Tagger::QUEUED ] ?? 0 ) + ( $by[ Equalify_Iris_Tagger::WORKING ] ?? 0 ),
+			'failed'   => $by[ Equalify_Iris_Tagger::FAILED ] ?? 0,
+		);
+
+		wp_cache_set( 'counts', $counts, 'equalify_iris', MINUTE_IN_SECONDS );
+
+		return $counts;
 	}
 
 	/** @return array{0: string, 1: array} A WHERE clause on `a`, and its values. */

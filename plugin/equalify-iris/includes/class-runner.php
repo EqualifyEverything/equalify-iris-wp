@@ -31,8 +31,8 @@
  * WP-Cron on the main site, every five minutes; any admin page on any site, when
  * the job is overdue; a person asking for something from an Equalify Iris screen
  * or the editor, so they see it start without waiting for the schedule; and
- * `wp equalify-iris run`, for a real scheduler. They all take the same lock, so
- * two runs never overlap.
+ * `wp equalify-iris run`, for a real scheduler. They all take the same lock (see
+ * lock()), so two runs never overlap.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -66,6 +66,9 @@ class Equalify_Iris_Runner {
 
 	/** Someone asked for something this request, so start a run when it ends. */
 	private static $kick = false;
+
+	/** This request holds the database lock (see lock()). */
+	private static $db_lock = false;
 
 	public static function init(): void {
 		add_filter( 'cron_schedules', array( __CLASS__, 'add_schedule' ) );
@@ -127,7 +130,7 @@ class Equalify_Iris_Runner {
 		add_action(
 			'shutdown',
 			static function () {
-				if ( ! get_site_transient( 'equalify_iris_kicked' ) && ! get_site_option( self::LOCK ) ) {
+				if ( ! get_site_transient( 'equalify_iris_kicked' ) && ! self::running() ) {
 					set_site_transient( 'equalify_iris_kicked', 1, MINUTE_IN_SECONDS );
 					self::start_now();
 				}
@@ -237,7 +240,7 @@ class Equalify_Iris_Runner {
 				}
 			}
 		} finally {
-			delete_site_option( self::LOCK );
+			self::unlock();
 		}
 
 		return $done;
@@ -258,6 +261,12 @@ class Equalify_Iris_Runner {
 			++$done['sites'];
 
 			self::set_due( $site_id, Equalify_Iris_Tagger::next_due() );
+		} catch ( Throwable $e ) {
+			// One site's broken content or plugin must not stop the rest of the
+			// network: it would stay first in line and fail again every run.
+			// Try it again later, and say why in the PHP error log.
+			error_log( sprintf( 'Equalify Iris: site %d failed during a run and will be retried in 15 minutes: %s in %s:%d', $site_id, $e->getMessage(), $e->getFile(), $e->getLine() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions
+			self::set_due( $site_id, time() + 15 * MINUTE_IN_SECONDS );
 		} finally {
 			if ( is_multisite() ) {
 				restore_current_blog();
@@ -271,19 +280,88 @@ class Equalify_Iris_Runner {
 		}
 	}
 
+	/**
+	 * Only one run at a time, across every web server.
+	 *
+	 * A database lock where the database has them (MySQL and MariaDB do): taking
+	 * it is atomic, and it is let go by itself when a run dies, because its
+	 * connection closes. The network option is then only a note for the screens
+	 * that a run is going. Without one, the option is the lock, and a run that
+	 * died is taken over once it is older than any run can be, by exactly one of
+	 * the runs that notice.
+	 */
 	private static function lock( int $seconds ): bool {
+		global $wpdb;
+
+		$got = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK( %s, 0 )', self::lock_name() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+		if ( null !== $got ) {
+			if ( '1' !== (string) $got ) {
+				return false;
+			}
+
+			self::$db_lock = true;
+			update_site_option( self::LOCK, time() );
+
+			return true;
+		}
+
 		if ( add_site_option( self::LOCK, time() ) ) {
 			return true;
 		}
 
-		// A run that died without unlocking leaves the lock behind. Take it over
-		// once it is older than the longest a run can take.
-		if ( time() - (int) get_site_option( self::LOCK ) > $seconds + 120 ) {
-			update_site_option( self::LOCK, time() );
-			return true;
+		$held = (string) get_site_option( self::LOCK );
+
+		return time() - (int) $held > $seconds + 120 && self::swap_lock( $held, (string) time() );
+	}
+
+	private static function unlock(): void {
+		global $wpdb;
+
+		delete_site_option( self::LOCK );
+
+		if ( self::$db_lock ) {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK( %s )', self::lock_name() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			self::$db_lock = false;
+		}
+	}
+
+	/** Is a run going now? */
+	public static function running(): bool {
+		global $wpdb;
+
+		$free = $wpdb->get_var( $wpdb->prepare( 'SELECT IS_FREE_LOCK( %s )', self::lock_name() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+		if ( null !== $free ) {
+			return '0' === (string) $free;
 		}
 
-		return false;
+		return time() - (int) get_site_option( self::LOCK, 0 ) < self::run_seconds() + 120;
+	}
+
+	/** One name per network per database. Lock names are server-wide, and at most 64 characters. */
+	private static function lock_name(): string {
+		global $wpdb;
+
+		return 'equalify_iris_' . md5( DB_NAME . '|' . $wpdb->base_prefix . '|' . get_current_network_id() );
+	}
+
+	/** Replace the stale lock, if no other run replaced it first. */
+	private static function swap_lock( string $old, string $new ): bool {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		if ( is_multisite() ) {
+			$swapped = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->sitemeta} SET meta_value = %s WHERE site_id = %d AND meta_key = %s AND meta_value = %s", $new, get_current_network_id(), self::LOCK, $old ) );
+			wp_cache_delete( get_current_network_id() . ':' . self::LOCK, 'site-options' );
+		} else {
+			$swapped = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", $new, self::LOCK, $old ) );
+			wp_cache_delete( self::LOCK, 'options' );
+			wp_cache_delete( 'alloptions', 'options' );
+		}
+		// phpcs:enable
+
+		return 1 === (int) $swapped;
 	}
 
 	// -----------------------------------------------------------------------

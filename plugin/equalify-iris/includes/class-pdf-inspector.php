@@ -13,7 +13,9 @@
  * HOW DO YOU COUNT PAGES WITHOUT A PDF LIBRARY?
  *
  * Every page in a PDF is an object marked `/Type /Page`, and the page tree usually
- * states the total as `/Count N`. Neither is readable when the PDF packs its
+ * states the total as `/Count N` in its `/Type /Pages` objects. Only those: the
+ * bookmarks use `/Count` too, for how many entries they have, and a short PDF
+ * with many bookmarks would otherwise look too long. Neither is readable when the PDF packs its
  * objects into compressed streams, so "I don't know" is a real answer: the file is
  * uploaded anyway and Iris decides. Wrongly refusing a PDF is worse than a wasted
  * upload.
@@ -28,8 +30,14 @@ class Equalify_Iris_PDF_Inspector {
 	/** Read the file a megabyte at a time, so a 50 MB PDF never sits in memory. */
 	const CHUNK_BYTES = 1048576;
 
-	/** Bytes carried between chunks, so a marker split across two is not missed. */
-	const OVERLAP_BYTES = 64;
+	/**
+	 * Bytes carried between chunks, so a marker split across two is not missed,
+	 * nor a page-tree object that straddles them.
+	 */
+	const OVERLAP_BYTES = 2048;
+
+	/** How far either side of `/Type /Pages` its object's `/Count` can be. */
+	const OBJECT_BYTES = 1024;
 
 	/**
 	 * Can this file be sent to Iris?
@@ -75,9 +83,9 @@ class Equalify_Iris_PDF_Inspector {
 	/**
 	 * Count the pages, or return null if the file does not say in plain text.
 	 *
-	 * The larger of the two signals wins. `/Type /Page(?![a-zA-Z])` skips the
-	 * `/Type /Pages` tree nodes, and the largest `/Count` is taken because an
-	 * incrementally updated PDF can carry more than one page tree.
+	 * The page tree's `/Count` wins when there is one: `/Type /Page` markers
+	 * over-count a PDF that was edited and saved incrementally, because the old
+	 * pages stay in the file. The largest tree `/Count` is the root's.
 	 */
 	public static function count_pages( string $file_path ): ?int {
 		$handle = fopen( $file_path, 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
@@ -108,17 +116,42 @@ class Equalify_Iris_PDF_Inspector {
 				)
 			) : 0;
 
-			if ( preg_match_all( '#/Count\s+(\d+)#', $haystack, $matches ) ) {
-				$declared = max( $declared, ...array_map( 'intval', $matches[1] ) );
-			}
+			$declared = max( $declared, self::tree_count( $haystack ) );
 
 			$carry = substr( $haystack, -self::OVERLAP_BYTES );
 		}
 
 		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 
-		$best = max( $markers, $declared );
+		$best = $declared > 0 ? $declared : $markers;
 
 		return $best > 0 ? $best : null;
+	}
+
+	/** The largest `/Count` in a `/Type /Pages` object in this text, or 0. */
+	private static function tree_count( string $text ): int {
+		$largest = 0;
+
+		if ( ! preg_match_all( '#/Type\s*/Pages(?![a-zA-Z])#', $text, $found, PREG_OFFSET_CAPTURE ) ) {
+			return 0;
+		}
+
+		foreach ( $found[0] as $match ) {
+			$at    = $match[1];
+			$start = max( 0, $at - self::OBJECT_BYTES );
+			$back  = substr( $text, $start, $at - $start );
+			$open  = strrpos( $back, 'obj' );
+			$from  = false !== $open ? $start + $open : $start;
+			$ahead = substr( $text, $at, self::OBJECT_BYTES );
+			$close = strpos( $ahead, 'endobj' );
+			$to    = $at + ( false !== $close ? $close : strlen( $ahead ) );
+
+			// Within this one object, so a neighbouring bookmark's /Count is not read.
+			if ( preg_match_all( '#/Count\s+(\d+)#', substr( $text, $from, $to - $from ), $counts ) ) {
+				$largest = max( $largest, ...array_map( 'intval', $counts[1] ) );
+			}
+		}
+
+		return $largest;
 	}
 }

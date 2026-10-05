@@ -28,6 +28,22 @@
  * Every error comes back as a WP_Error. Those Iris will refuse again however often
  * we ask — not a PDF, too many pages, encrypted, no tagger — carry
  * `permanent => true`, so the tagger stops and says why instead of retrying.
+ * A 401 or 403 is about us, not the PDF — a missing or wrong token — so it
+ * carries `refused => true` instead, and the tagger pauses everything until
+ * someone fixes the settings (see Equalify_Iris_Settings::refused()).
+ *
+ * HTTPS
+ *
+ * Every request carries the token, and an upload carries the whole document, so
+ * plain http is refused except to this machine, or when wp-config.php says
+ * otherwise (see Equalify_Iris_Settings::url_is_allowed()).
+ *
+ * WHAT WE TRUST IRIS WITH
+ *
+ * The tagged PDF Iris sends back is saved in the uploads folder and served to
+ * visitors in place of the original, so the deployment must be one you trust as
+ * much as anyone who can upload media. We check that it is a whole PDF of a
+ * sensible size; we cannot check what is inside it.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -49,12 +65,31 @@ class Equalify_Iris_API_Client {
 	 */
 	const TIMEOUT_TAG = 320;
 
+	/** Seconds to wait for a connection, for the uploads sent with cURL. */
+	const TIMEOUT_CONNECT = 10;
+
+	/** A tagged PDF more than this many times the original's size is not one. */
+	const MAX_GROWTH = 4;
+
 	// -----------------------------------------------------------------------
 	// Requests
 	// -----------------------------------------------------------------------
 
 	private static function url( string $path ): string {
 		return Equalify_Iris_Settings::api_url() . '/' . ltrim( $path, '/' );
+	}
+
+	/** Nothing is sent to an address that is not allowed, whoever saved it. */
+	private static function insecure() {
+		if ( Equalify_Iris_Settings::url_is_allowed( Equalify_Iris_Settings::api_url() ) ) {
+			return null;
+		}
+
+		return new WP_Error(
+			'equalify_iris_insecure',
+			__( 'The Equalify Iris API address must start with https://. Plain http is only allowed to this server itself, or with EQUALIFY_IRIS_ALLOW_HTTP in wp-config.php.', 'equalify-iris' ),
+			array( 'refused' => true )
+		);
 	}
 
 	/**
@@ -122,17 +157,17 @@ class Equalify_Iris_API_Client {
 			);
 
 		// Iris looked at what we sent and said no. Asking again cannot change that:
-		// 400 not a PDF or too many pages, 401 a gated deployment we hold no secret
-		// for, 413 too big, 422 unconvertible or refused by the tagger (encrypted,
-		// say), 409 no_source_pdf, 404 tagged_pdf_unavailable.
-		$permanent = in_array( $code, array( 400, 401, 403, 413, 422 ), true )
+		// 400 not a PDF or too many pages, 413 too big, 422 unconvertible or
+		// refused by the tagger (encrypted, say), 409 no_source_pdf, 404
+		// tagged_pdf_unavailable.
+		$permanent = in_array( $code, array( 400, 413, 422 ), true )
 			|| in_array( $error_code, array( 'no_source_pdf', 'tagged_pdf_unavailable' ), true );
 
-		// Iris's own GitHub credential failing is also a 401, but it is the
-		// deployment's fault and clears itself, so it is worth retrying.
-		if ( 401 === $code && false !== stripos( $message, 'authenticate to GitHub' ) ) {
-			$permanent = false;
-		}
+		// Iris will not let us in: a gated deployment we hold no secret for, or the
+		// wrong one. Nothing to do with the PDF, and true of every PDF until the
+		// settings change. Except Iris's own GitHub credential failing, which is
+		// also a 401, but the deployment's fault, and clears itself.
+		$refused = in_array( $code, array( 401, 403 ), true ) && false === stripos( $message, 'authenticate to GitHub' );
 
 		return new WP_Error(
 			'equalify_iris_http_error',
@@ -141,6 +176,7 @@ class Equalify_Iris_API_Client {
 				'status'    => $code,
 				'code'      => $error_code,
 				'permanent' => $permanent,
+				'refused'   => $refused,
 			)
 		);
 	}
@@ -154,6 +190,13 @@ class Equalify_Iris_API_Client {
 		$data = $error->get_error_data();
 
 		return is_array( $data ) && ! empty( $data['permanent'] );
+	}
+
+	/** Will Iris not let us in at all, whatever the PDF? */
+	public static function is_refused( $error ): bool {
+		$data = is_wp_error( $error ) ? $error->get_error_data() : null;
+
+		return is_array( $data ) && ! empty( $data['refused'] );
 	}
 
 	/** The Iris error code (`invalid_state`, `busy`…) inside a WP_Error, if any. */
@@ -176,6 +219,12 @@ class Equalify_Iris_API_Client {
 
 	/** @return array|WP_Error GET /limits, which includes `tagged_pdf: bool`. */
 	public static function limits() {
+		$insecure = self::insecure();
+
+		if ( $insecure ) {
+			return $insecure;
+		}
+
 		return self::handle(
 			wp_remote_get(
 				self::url( '/limits' ),
@@ -189,6 +238,12 @@ class Equalify_Iris_API_Client {
 
 	/** @return array|WP_Error GET /me, which fails with a 401 if we may not use it. */
 	public static function me() {
+		$insecure = self::insecure();
+
+		if ( $insecure ) {
+			return $insecure;
+		}
+
 		return self::handle(
 			wp_remote_get(
 				self::url( '/me' ),
@@ -240,14 +295,43 @@ class Equalify_Iris_API_Client {
 	 * used when it is there because it streams the file from disk, where
 	 * wp_remote_post() would hold the whole PDF in memory twice.
 	 *
+	 * cURL does not go through WordPress's HTTP API, so it would miss what a site
+	 * has set up there. When there is any of it — WP_HTTP_BLOCK_EXTERNAL, a
+	 * proxy, a plugin filtering requests — the upload goes through
+	 * wp_remote_post() instead, memory and all.
+	 *
 	 * @return array{session_id: string, status: string}|WP_Error
 	 */
 	public static function create_session( string $file_path ) {
-		if ( function_exists( 'curl_init' ) && function_exists( 'curl_file_create' ) ) {
-			return self::upload_with_curl( $file_path );
+		$insecure = self::insecure();
+
+		if ( $insecure ) {
+			return $insecure;
 		}
 
-		return self::upload_with_wp_http( $file_path );
+		$session = self::use_curl() ? self::upload_with_curl( $file_path ) : self::upload_with_wp_http( $file_path );
+
+		if ( ! is_wp_error( $session ) && ( empty( $session['session_id'] ) || ! is_string( $session['session_id'] ) ) ) {
+			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris accepted the PDF but did not say where to find it.', 'equalify-iris' ) );
+		}
+
+		return $session;
+	}
+
+	private static function use_curl(): bool {
+		if ( ! function_exists( 'curl_init' ) || ! function_exists( 'curl_file_create' ) ) {
+			return false;
+		}
+
+		if ( has_filter( 'pre_http_request' ) || has_filter( 'http_request_args' ) || has_filter( 'http_api_curl' ) ) {
+			return false;
+		}
+
+		if ( ( new WP_HTTP_Proxy() )->is_enabled() ) {
+			return false;
+		}
+
+		return ! ( new WP_Http() )->block_request( self::url( '/sessions' ) );
 	}
 
 	private static function upload_with_curl( string $file_path ) {
@@ -270,6 +354,8 @@ class Equalify_Iris_API_Client {
 				),
 				CURLOPT_RETURNTRANSFER => true,
 				CURLOPT_TIMEOUT        => self::TIMEOUT_UPLOAD,
+				CURLOPT_CONNECTTIMEOUT => self::TIMEOUT_CONNECT,
+				CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
 				CURLOPT_HTTPHEADER     => $lines,
 			)
 		);
@@ -325,6 +411,12 @@ class Equalify_Iris_API_Client {
 
 	/** @return array{status: string, error?: string}|WP_Error */
 	public static function get_session( string $session_id ) {
+		$insecure = self::insecure();
+
+		if ( $insecure ) {
+			return $insecure;
+		}
+
 		return self::handle(
 			wp_remote_get(
 				self::url( '/sessions/' . rawurlencode( $session_id ) ),
@@ -343,10 +435,17 @@ class Equalify_Iris_API_Client {
 	 * and a PDF uploaded to a website with tags almost always has the empty or
 	 * broken ones an authoring tool added on export — replacing them is the point.
 	 *
+	 * @param int $original Bytes in the original PDF, to judge the answer's size by.
 	 * @return array{pdf: string, warnings: string[]}|WP_Error The PDF as bytes, and
 	 *                                                         the tagger's warning codes.
 	 */
-	public static function tagged_pdf( string $session_id, int $timeout = self::TIMEOUT_TAG ) {
+	public static function tagged_pdf( string $session_id, int $timeout = self::TIMEOUT_TAG, int $original = 0 ) {
+		$insecure = self::insecure();
+
+		if ( $insecure ) {
+			return $insecure;
+		}
+
 		$data = self::handle(
 			wp_remote_post(
 				self::url( '/sessions/' . rawurlencode( $session_id ) . '/pdf' ),
@@ -365,8 +464,16 @@ class Equalify_Iris_API_Client {
 
 		$pdf = isset( $data['pdf'] ) ? base64_decode( (string) $data['pdf'], true ) : false; // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions
 
-		if ( false === $pdf || ! str_starts_with( $pdf, '%PDF' ) ) {
-			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back something that is not a PDF.', 'equalify-iris' ) );
+		// A PDF starts with %PDF- and ends with %%EOF, give or take a line end.
+		if ( false === $pdf || ! str_starts_with( $pdf, '%PDF-' ) || false === strpos( substr( $pdf, -1024 ), '%%EOF' ) ) {
+			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back something that is not a whole PDF.', 'equalify-iris' ) );
+		}
+
+		// Tags add a little; anything far bigger is not this document.
+		$most = max( $original * self::MAX_GROWTH, 5 * MB_IN_BYTES );
+
+		if ( strlen( $pdf ) > min( $most, Equalify_Iris_Settings::MAX_FILE_BYTES * self::MAX_GROWTH ) ) {
+			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back a PDF far bigger than the original, so it was not saved.', 'equalify-iris' ), array( 'permanent' => true ) );
 		}
 
 		$warnings = array();
@@ -388,10 +495,15 @@ class Equalify_Iris_API_Client {
 	 * already have the PDF, so a failure here costs us nothing.
 	 */
 	public static function close_session( string $session_id ): void {
+		if ( self::insecure() ) {
+			return;
+		}
+
 		wp_remote_post(
 			self::url( '/sessions/' . rawurlencode( $session_id ) . '/close' ),
 			array(
-				'timeout' => self::TIMEOUT_STATUS,
+				// Short, because it often comes at the very end of a run.
+				'timeout' => 5,
 				'headers' => self::headers(),
 			)
 		);

@@ -78,8 +78,12 @@ quiet sites cost one indexed query per run. The table is read and written with d
 `get_site_meta()`, because a cached copy would always be out of date.
 
 **How long.** `EQUALIFY_IRIS_RUN_SECONDS`, 90 by default, inside the 120 seconds Pantheon allows.
-Every request to Iris is cut to what is left of the run. A run holds `equalify_iris_lock` (a network
-option), and a lock older than the run plus two minutes is taken over.
+Every request to Iris is cut to what is left of the run. A run holds a database lock (`GET_LOCK`),
+which MySQL and MariaDB release by themselves if the run dies, and notes it in `equalify_iris_lock`
+for the screens. Where the database has no such locks, the option is the lock, and one older than the
+run plus two minutes is taken over with a single conditional update, so only one run can win. A
+site whose run throws an error is logged and tried again in 15 minutes; the rest of the network
+carries on.
 
 **How many at Iris.** `EQUALIFY_IRIS_MAX_AT_IRIS`, 4 by default, across the network, kept in the
 network option `equalify_iris_at_iris` as `site:attachment => when uploaded`. No site has more than
@@ -113,7 +117,9 @@ website almost always has the empty or broken tags an authoring tool added on ex
 | What happened | What the plugin does |
 | --- | --- |
 | Over 25 pages or 50 MB | Failed before upload, with the reason |
-| Iris refused it: not a PDF, encrypted, no tagger, needs a token (400, 401, 413, 422, `no_source_pdf`, `tagged_pdf_unavailable`) | Failed, with Iris's own sentence |
+| Iris refused it: not a PDF, encrypted, no tagger (400, 413, 422, `no_source_pdf`, `tagged_pdf_unavailable`) | Failed, with Iris's own sentence |
+| Iris will not let the network in: no token, or the wrong one (401, 403) | Nothing sent for 15 minutes or until the settings are saved; both screens say why; the PDF loses nothing |
+| What came back is not a whole PDF, or is far bigger than the original | Tries again, or fails when it is too big |
 | Iris failed to convert it | Failed, with Iris's reason |
 | Iris is busy (`503 busy`) or not ready (`409 invalid_state`) | Waits for the next run, no penalty |
 | Iris unreachable, 5xx, 429 | Tries again next run, up to 10 times, then failed |
@@ -154,7 +160,7 @@ for uninstall to clean up).
 
 **Per network** (site options): `equalify_iris_api_url`, `equalify_iris_api_token`,
 `equalify_iris_network_auto`, `equalify_iris_generation`, `equalify_iris_read_generation`,
-`equalify_iris_lock`, `equalify_iris_last_run` and `equalify_iris_at_iris`.
+`equalify_iris_lock`, `equalify_iris_last_run`, `equalify_iris_at_iris` and `equalify_iris_refused`.
 
 ### Turning automatic tagging on for a thousand sites
 
@@ -167,13 +173,19 @@ takes effect on every site without the settings screen visiting each one.
 
 On the front end, a site with any tagged PDFs buffers the whole page from `template_redirect` and
 changes it once it is finished, so content, menus, widgets, templates and links a theme prints from
-PHP are all covered. Every `href` or `data` attribute (the File block's inline preview uses `data`)
+PHP are all covered. Every `href`, `data` or `src` attribute (the File block's inline preview uses
+`data`; embeds and iframes use `src`)
 that points at a file in this site's uploads folder, and has an entry in the link map, is pointed at
 the tagged copy. Query strings and fragments are kept. Links to other sites, and to PDFs with no
-tagged copy, are left alone. The map is one autoloaded option, so this costs no queries, and a site
-with no tagged PDFs is not buffered at all.
+tagged copy, are left alone. The map is one autoloaded option, so this costs no queries (once it
+passes 64 KB, thousands of PDFs, it stops being autoloaded and costs one), and a site with no
+tagged PDFs is not buffered at all. If the page is too big for PHP's regular expressions, it is
+sent as it was.
 
-A page cache keeps serving the old links until it is cleared.
+When a tagged copy is saved or deleted, the posts that link to it are cleaned from the cache
+(`clean_post_cache()`, which page-cache plugins also purge on), and `equalify_iris_links_changed`
+fires with the attachment id for anything else. Menus, widgets and archives showing the PDF are
+not purged: a page cache keeps serving their old links until it is cleared.
 
 ## Lifecycle
 
