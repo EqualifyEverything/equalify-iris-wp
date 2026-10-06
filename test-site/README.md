@@ -36,7 +36,7 @@ resolves one level deep.
 | --- | --- | --- |
 | Documents | published | Two PDFs, plus a PDF on another domain that must never be touched |
 | Linked Twice | published | The same PDF twice, so both links have to switch |
-| A Very Long Manual | published | A 30-page PDF, refused before upload |
+| A Very Long Manual | published | A 30-page PDF, refused by Iris (and the mock) at upload |
 | Draft Page | draft | Its PDF must not be listed until the page is published |
 | Private Page | private | Its PDF must never be listed |
 
@@ -102,7 +102,7 @@ ddev exec tail -f wp/wp-content/debug.log
 - **Send to Iris for Tagging** from a row, from the bulk action, and with the "all untagged" button.
 - After a few ticks: **View Iris-Tagged Version** opens `name-accessible.pdf`; **Delete Iris-Tagged
   Version** asks first, then removes it.
-- The 30-page PDF fails with a sentence about pages, and is never uploaded.
+- The 30-page PDF fails with Iris's sentence about pages, refused as it is uploaded.
 - An editor or subscriber has no Equalify Iris menu, and a direct URL is refused.
 
 **Links**
@@ -111,6 +111,12 @@ ddev exec tail -f wp/wp-content/debug.log
   the ones in the menu, widget and category archive.
 - The example.org link and untagged PDFs are unchanged.
 - Delete the tagged copy, or deactivate the plugin: the links go back.
+
+**Copies of the site**
+
+- `ddev wp site option update equalify_iris_home '{"address":"live.example.org","environment":"production"}' --format=json`:
+  both screens say the site looks like a copy, `run` does nothing, and **Tag PDFs Here Too** (or
+  `ddev wp equalify-iris resume`) puts it back.
 
 **Automatic tagging**
 

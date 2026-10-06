@@ -147,7 +147,7 @@ class Equalify_Iris_Tagger {
 		return (array) get_post_meta( $attachment_id, self::META_WARNINGS, true );
 	}
 
-	/** The tagged copy's URL, or '' when there is none. */
+	/** The tagged copy's URL, as visitors' links have it, or '' when there is none. */
 	public static function tagged_url( int $attachment_id ): string {
 		$file = (string) get_post_meta( $attachment_id, self::META_FILE, true );
 
@@ -155,7 +155,9 @@ class Equalify_Iris_Tagger {
 			return '';
 		}
 
-		return trailingslashit( wp_get_upload_dir()['baseurl'] ) . $file;
+		$map = Equalify_Iris_Settings::link_map();
+
+		return Equalify_Iris_Links::url( wp_get_upload_dir()['baseurl'], (string) ( $map[ (string) get_post_meta( $attachment_id, '_wp_attached_file', true ) ] ?? $file ) );
 	}
 
 	/**
@@ -182,6 +184,17 @@ class Equalify_Iris_Tagger {
 		Equalify_Iris_Runner::wake();
 
 		return true;
+	}
+
+	/** Forget the PDF's session at Iris, and send it again from the start. */
+	public static function start_over( int $attachment_id ): void {
+		if ( self::WORKING !== self::status( $attachment_id ) ) {
+			return;
+		}
+
+		delete_post_meta( $attachment_id, self::META_SESSION );
+		delete_post_meta( $attachment_id, self::META_ATTEMPTS );
+		self::set_status( $attachment_id, self::QUEUED );
 	}
 
 	/**
@@ -430,7 +443,7 @@ class Equalify_Iris_Tagger {
 		update_post_meta( $id, self::META_FILE, $tagged );
 
 		$map              = Equalify_Iris_Settings::link_map();
-		$map[ $original ] = $tagged;
+		$map[ $original ] = $tagged . '?v=' . time();
 		Equalify_Iris_Settings::set_link_map( $map );
 
 		// Only now, and only if the new copy went somewhere else: the original

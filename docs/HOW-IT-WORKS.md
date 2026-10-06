@@ -116,7 +116,8 @@ website almost always has the empty or broken tags an authoring tool added on ex
 
 | What happened | What the plugin does |
 | --- | --- |
-| Over 25 pages or 50 MB | Failed before upload, with the reason |
+| Over 50 MB | Failed before upload, with the reason |
+| Over 25 pages | Refused by Iris as soon as it arrives (400), before converting anything; failed, with Iris's sentence |
 | Iris refused it: not a PDF, encrypted, no tagger (400, 413, 422, `no_source_pdf`, `tagged_pdf_unavailable`) | Failed, with Iris's own sentence |
 | Iris will not let the network in: no token, or the wrong one (401, 403) | Nothing sent for 15 minutes or until the settings are saved; both screens say why; the PDF loses nothing |
 | What came back is not a whole PDF, or is far bigger than the original | Tries again, or fails when it is too big |
@@ -150,7 +151,7 @@ A failed PDF stays failed until someone chooses **Send to Iris for Tagging** aga
 `removed` means a site admin deleted the tagged copy. Automatic tagging leaves those alone.
 
 **Per site** (options): `equalify_iris_auto_tag` (the site's switch), `equalify_iris_map` (original
-file → tagged file, both relative to uploads), `equalify_iris_indexed` (how far through the content
+file → tagged file, both relative to uploads, the tagged file ending in `?v=` and when it was saved), `equalify_iris_indexed` (how far through the content
 it has read), `equalify_iris_places_stale`, `equalify_iris_profile` (its public types, taxonomies
 and sidebars), and `equalify_iris_scanned` (see below).
 
@@ -160,7 +161,8 @@ for uninstall to clean up).
 
 **Per network** (site options): `equalify_iris_api_url`, `equalify_iris_api_token`,
 `equalify_iris_network_auto`, `equalify_iris_generation`, `equalify_iris_read_generation`,
-`equalify_iris_lock`, `equalify_iris_last_run`, `equalify_iris_at_iris` and `equalify_iris_refused`.
+`equalify_iris_lock`, `equalify_iris_last_run`, `equalify_iris_at_iris`, `equalify_iris_refused`, and
+`equalify_iris_home` (the address and environment type the job runs on; see below).
 
 ### Turning automatic tagging on for a thousand sites
 
@@ -176,7 +178,9 @@ changes it once it is finished, so content, menus, widgets, templates and links 
 PHP are all covered. Every `href`, `data` or `src` attribute (the File block's inline preview uses
 `data`; embeds and iframes use `src`)
 that points at a file in this site's uploads folder, and has an entry in the link map, is pointed at
-the tagged copy. Query strings and fragments are kept. Links to other sites, and to PDFs with no
+the tagged copy, with `?v=` and when that copy was saved. A re-tagged PDF keeps its filename, so the
+new address keeps CDNs and browsers from serving the copy it replaced. The link's own query string
+follows ours, and its fragment is kept. Links to other sites, and to PDFs with no
 tagged copy, are left alone. The map is one autoloaded option, so this costs no queries (once it
 passes 64 KB, thousands of PDFs, it stops being autoloaded and costs one), and a site with no
 tagged PDFs is not buffered at all. If the page is too big for PHP's regular expressions, it is
@@ -197,6 +201,7 @@ not purged: a page cache keeps serving their old links until it is cleared.
 | The attachment is deleted | Its tagged file and map entry go with it |
 | Deactivate | The job is unscheduled. Links go back to the originals because nothing swaps them. Tagged files stay |
 | Activate | Sites that used the plugin read their content again, in case it changed meanwhile, and carry on |
+| The database is copied to another address or environment type | The copy is paused: no runs, nothing sent to Iris, so live's PDFs at Iris stay live's. **Tag PDFs Here Too**, or `wp equalify-iris resume`, records the new place and sends the PDFs that were at Iris again from there |
 | Delete the plugin | `uninstall.php` deletes every tagged file, all our post meta, options and blogmeta, on the sites marked `equalify_iris_used` only, with direct queries |
 
 ## The files

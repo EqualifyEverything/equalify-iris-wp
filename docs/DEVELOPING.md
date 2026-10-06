@@ -56,7 +56,7 @@ touches.
 | You want to change… | Go to |
 | --- | --- |
 | A setting, or whether it is per site or per network | `includes/class-settings.php` |
-| The page or size limit | `MAX_PDF_PAGES`, `MAX_FILE_BYTES` in `includes/class-settings.php` |
+| The size limit | `MAX_FILE_BYTES` in `includes/class-settings.php`. The page limit is Iris's own; it answers a longer PDF with a `400` at upload. |
 | Any request to Iris, or which errors are permanent | `includes/class-api-client.php` |
 | Which sites a run visits, how long it lasts, how many PDFs are at Iris | `includes/class-runner.php` |
 | What one site's turn does | `includes/class-tagger.php` |
@@ -106,7 +106,8 @@ Things that are easy to get wrong:
   `*.localhost`, `host.docker.internal`), or with `define( 'EQUALIFY_IRIS_ALLOW_HTTP', true );`. It
   is checked when saved and again before every request.
 - **What comes back from Iris is trusted.** The tagged PDF replaces the original for visitors. It
-  is checked for `%PDF-` and `%%EOF` and a sensible size, written to a temporary file and renamed
+  is checked for `%PDF-` and `%%EOF` and a sensible size (twice the original plus 5 MB; anything
+  bigger is not even read into memory), written to a temporary file and renamed
   into place, but nothing checks what is inside it. Point the plugin only at a deployment you
   trust as much as someone who can upload media.
 
@@ -134,6 +135,8 @@ Match the code that is there:
 | `clean_post_cache()` in a loop | Page-cache plugins purge the CDN for every post. The runner flushes the runtime cache instead. |
 | A query per site | A network can have 100,000. Anything every site needs goes through one query on `blogmeta`, like `wake_all()`. |
 | A run longer than the host allows | Pantheon kills PHP at 120 seconds, mid-write. Every Iris request is cut to the run's deadline; a new one must be too. |
+| A new request about a PDF | Session calls go through `blocked()` in the API client, so a staging copy of the database never touches live's sessions. A new one must too. |
+| Reading a link map entry as a path | Entries can end in `?v=<time>`. Build addresses with `Equalify_Iris_Links::url()`. |
 | A checkbox in a settings form | An unchecked box sends nothing. Treat a missing field as off. |
 | `get_error_data()` returning null | `$error->get_error_data()['status']` warns. Use `Equalify_Iris_API_Client::status()`. |
 | Making the tagged copy an attachment | It would show up in the media library as a second PDF. It is a plain file on purpose. |

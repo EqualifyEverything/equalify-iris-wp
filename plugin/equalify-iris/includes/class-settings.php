@@ -32,12 +32,6 @@ class Equalify_Iris_Settings {
 	const MAP_AUTOLOAD_BYTES = 65536;
 
 	/**
-	 * The most pages Iris converts in one PDF. This mirrors the server's own cap,
-	 * so a longer PDF is refused here with a clear reason instead of uploaded.
-	 */
-	const MAX_PDF_PAGES = 25;
-
-	/**
 	 * The largest PDF we send, in bytes (50 MB). Ours rather than the server's:
 	 * a shared host struggles to push more than this in one request.
 	 */
@@ -165,6 +159,60 @@ class Equalify_Iris_Settings {
 		update_site_option( self::PREFIX . 'network_auto', $on );
 	}
 
+	/**
+	 * Where the job runs: the network's address, as the database has it, and the
+	 * environment type wp-config.php gives (production when it gives none).
+	 *
+	 * Read from the database, not through WP_HOME or WP_SITEURL, which some hosts
+	 * set from whichever address the request came in on.
+	 *
+	 * @return array{address: string, environment: string}
+	 */
+	public static function home(): array {
+		global $wpdb;
+
+		if ( is_multisite() ) {
+			$network = get_network();
+			$address = $network ? $network->domain . $network->path : '';
+		} else {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$address = (string) $wpdb->get_var( "SELECT option_value FROM {$wpdb->options} WHERE option_name = 'siteurl' LIMIT 1" );
+		}
+
+		return array(
+			// http and https, and a trailing slash, are the same place.
+			'address'     => untrailingslashit( strtolower( (string) preg_replace( '#^[a-z]+://#i', '', $address ) ) ),
+			'environment' => wp_get_environment_type(),
+		);
+	}
+
+	/**
+	 * Is this a copy of the network the job was set up on — a staging site, say,
+	 * made from a copy of the live database?
+	 *
+	 * A copy has the live site's PDFs that are at Iris, by their session ids. If
+	 * it carried on, it would fetch and close them before the live site could,
+	 * and send Iris its own PDFs as well. So it does nothing until someone says
+	 * it should (see Equalify_Iris_Runner::resume_here()).
+	 */
+	public static function is_copy(): bool {
+		$home = get_site_option( self::PREFIX . 'home' );
+
+		return is_array( $home ) && $home !== self::home();
+	}
+
+	/** @return array{address: string, environment: string}|null Where the job was set up. */
+	public static function original_home(): ?array {
+		$home = get_site_option( self::PREFIX . 'home' );
+
+		return is_array( $home ) ? $home : null;
+	}
+
+	/** The job belongs here from now on. */
+	public static function remember_home(): void {
+		update_site_option( self::PREFIX . 'home', self::home() );
+	}
+
 	/** Goes up each time automatic tagging is switched on network-wide. */
 	public static function generation(): int {
 		return (int) get_site_option( self::PREFIX . 'generation', 0 );
@@ -209,7 +257,8 @@ class Equalify_Iris_Settings {
 
 	/**
 	 * Every PDF on this site that has a tagged version, as original file =>
-	 * tagged file, both relative to the uploads folder.
+	 * tagged file, both relative to the uploads folder. The tagged file may end
+	 * in `?v=` and when it was saved (see Equalify_Iris_Links::url()).
 	 *
 	 * Kept as one option, rather than looked up per link, so that swapping the
 	 * links on a page costs no database queries at all.
