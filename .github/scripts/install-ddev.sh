@@ -16,4 +16,4 @@ echo "${sha256}  /tmp/ddev.tgz" | sha256sum -c -
 sudo tar -xzf /tmp/ddev.tgz -C /usr/local/bin ddev ddev-hostname mkcert
 
 ddev config global --instrumentation-opt-in=false --omit-containers=ddev-ssh-agent
-ddev version | head -3
+ddev version | head -3 || true

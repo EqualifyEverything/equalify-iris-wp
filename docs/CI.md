@@ -1,13 +1,14 @@
 # CI
 
-Two workflows run Claude on AWS Bedrock. Both live in `.github/workflows/`.
+Three workflows run Claude on AWS Bedrock. All live in `.github/workflows/`.
 
 | Workflow | Runs when | Does |
 | --- | --- | --- |
 | `code-review.yml` | A pull request is opened, pushed to, or marked ready | Runs the checks and posts one review |
 | `maintainer.yml` | An admin adds `Ready for Build` to an issue | Builds the issue and opens one pull request |
+| `maintainer-revise.yml` | The maintainer's pull request is reviewed | Answers the review on the same branch |
 
-Neither can merge, release, or reach the real Iris.
+None of them can merge, release, or reach the real Iris.
 
 ## Code review
 
@@ -28,7 +29,11 @@ an approval, with any smaller problems as notes. On a pull request opened by git
 it posts a comment instead, starting with the verdict, because a bot cannot approve its own pull
 request.
 
-If the model runs out of time (22 minutes), a fallback review posts what it found so far.
+If the model runs out of time (22 minutes), a fallback review posts what it found so far. A run
+replaced by a newer push posts nothing.
+
+On the maintainer's pull requests, the review also reads the maintainer's replies to its last
+review. It withdraws a finding when the maintainer's reason holds, and does not repeat it otherwise.
 
 To review a pull request again: `gh workflow run code-review.yml -f pr_number=<n>`.
 
@@ -39,7 +44,8 @@ can reach Bedrock, so a fork's pull request is read by hand.
 
 An admin adds the `Ready for Build` label to an issue. Claude then reads the docs and the code,
 makes the change, tests it on the test network against the mock Iris, and opens one pull request.
-It asks the admin for a review and credits the person who reported the issue.
+It credits the person who reported the issue. It does not ask the admin for a review yet: see
+"Answering reviews".
 
 It does not start, and says why on the issue, when:
 
@@ -57,6 +63,43 @@ own machine, so the model cannot change it. It turns a pull request into a draft
 `.github/`, `LICENSE` or a `.gitignore`, adds WordPress files, PDFs or database dumps, or is not on
 the issue's branch. It then starts the code review, because a pull request opened by
 github-actions[bot] does not start one by itself.
+
+The model's rules are in `.github/maintainer/RULES.md`, which both maintainer workflows use. The
+maintainer cannot change it.
+
+## Answering reviews
+
+After each review of the maintainer's pull request, `maintainer-revise.yml` hands the review to the
+maintainer. For each finding, the maintainer does one of three things:
+
+- **Fixed**: it agrees, and pushes a fix to the same branch.
+- **Declined**: it disagrees, and says why.
+- **Needs a person**: it is a decision the maintainer should not make alone.
+
+Its reply goes on the pull request, and the review runs again. This repeats until the pull request
+is ready or the maintainer is blocked. Only then does it assign the admin who approved the issue and
+ask them for a review, with a note of what is settled and what is open.
+
+It stops and asks the admin when:
+
+- the review approves the latest commit;
+- nothing is left that the maintainer agrees to change, including when the review only repeats
+  findings it already declined;
+- it needs a person, a check is red for a reason outside the pull request, or its changes do not
+  pass;
+- the review did not complete, or the maintainer's run failed;
+- six rounds have passed without an approval. That is a backstop; the maintainer is told to stop
+  as soon as more rounds would not make the pull request better.
+
+After that, it waits. To send the pull request back, an admin leaves a review: Comment or Request
+changes. Reviews and comments from anyone else are not read. An admin can also start a round by
+hand: `gh workflow run maintainer-revise.yml -f pr_number=<n>`.
+
+Each round, the model can only push to that pull request's branch. A separate job then checks what
+it pushed. If it rewrote the branch's history or touched a path it may not, the pull request becomes
+a draft and the admin is asked to read it.
+
+The revise workflow starts only from `main`, so it works once it is merged.
 
 ## Keeping the test network away from the real Iris
 
@@ -89,3 +132,6 @@ default to `us.anthropic.claude-opus-5`.
 | actionlint | `code-review.yml`, "Run the checks" | Version and SHA-256 from the release's checksums file |
 | PHP and Composer images | `.github/scripts/php-checks.sh` | Image digest |
 | PHP sniffs | `.github/phpcs/composer.lock` | `composer update` in `.github/phpcs/`. Keep wpcs at 3.4.1 or later. |
+
+The checks on what the maintainer may change are in `.github/scripts/pr-path-problem.sh`, used by
+both maintainer workflows.
