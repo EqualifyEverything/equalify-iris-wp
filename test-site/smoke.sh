@@ -36,6 +36,10 @@ ok() {
 	printf 'ok    %s\n' "$1"
 }
 
+# Any other command that fails ends the script under `set -e`. Say which, rather than stopping
+# with no message.
+trap 'printf "FAIL  line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+
 fail() {
 	printf 'FAIL  %s\n' "$1" >&2
 	exit 1
@@ -79,7 +83,7 @@ trap cleanup EXIT
 ./bin/start-mock-iris.sh >/dev/null || fail "The mock Iris did not start. See /tmp/mock-iris.log in the web container."
 ok "mock Iris answering at ${MOCK_URL}"
 
-log_lines="$(ddev exec "wc -l < wp/wp-content/debug.log 2>/dev/null || echo 0" | tr -d '\r ')"
+log_lines="$(ddev exec "{ wc -l < wp/wp-content/debug.log; } 2>/dev/null || echo 0" | tr -d '\r ')"
 
 # ---------------------------------------------------------------------------
 # A PDF on a draft page, and one on a published page.
@@ -139,10 +143,11 @@ ok "tagged after ${i} runs"
 # ---------------------------------------------------------------------------
 # What a visitor sees.
 
-tagged_url="$(wpq eval "echo Equalify_Iris_Tagger::tagged_url( ${pdf} );" | tail -1)"
+tagged_url="$(wpq eval "echo Equalify_Iris_Tagger::tagged_url( ${pdf} );" | tail -1)" \
+	|| fail "Could not read the tagged address: ${tagged_url:-no output}"
 [ -n "$tagged_url" ] || fail "The PDF is tagged but has no tagged address."
 
-html="$(curl -sk "${SITE_URL}/${slug}/")"
+html="$(curl -sk "${SITE_URL}/${slug}/")" || fail "Logged out, ${SITE_URL}/${slug}/ did not load (curl exit $?)."
 tagged_path="${tagged_url#*://*/}"
 grep -qF "${tagged_path%%\?*}" <<<"$html" || fail "Logged out, the page does not link to the tagged copy (${tagged_url})."
 grep -qF "${pdf_url}\"" <<<"$html" && fail "Logged out, the page still links to the original PDF."

@@ -53,8 +53,9 @@ env:
   MAX_ROUNDS: 6
 
 jobs:
-  # An admin's review on a maintainer PR. This runs the PR's copy of this file, so it does nothing
-  # but check and dispatch the round on `main`. It holds no secret.
+  # An admin's review on a maintainer PR. `pull_request_review` runs this file as it is on the
+  # PR's merge commit, so it does nothing but check and dispatch the round on `main`, and holds no
+  # secret.
   relay:
     if: >-
       github.event_name == 'pull_request_review' &&

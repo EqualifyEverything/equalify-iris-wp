@@ -15,5 +15,9 @@ curl -fsSL --retry 3 -o /tmp/ddev.tgz \
 echo "${sha256}  /tmp/ddev.tgz" | sha256sum -c -
 sudo tar -xzf /tmp/ddev.tgz -C /usr/local/bin ddev ddev-hostname mkcert
 
+# Without a local CA, DDEV serves the site over http only, and everything that uses its https
+# address fails to connect.
+mkcert -install
+
 ddev config global --instrumentation-opt-in=false --omit-containers=ddev-ssh-agent
 ddev version | head -3 || true
