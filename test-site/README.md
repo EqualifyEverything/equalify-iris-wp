@@ -80,6 +80,7 @@ ddev wp equalify-iris check             # can Iris tag PDFs?
 ddev wp equalify-iris read [--network]  # read a site's content again, or every site's
 ddev wp equalify-iris run               # one run of the job, as a scheduler would
 ddev wp equalify-iris remove 5          # delete a tagged copy
+./smoke.sh                              # tag one PDF from start to finish, against the mock
 ddev exec tail -f wp/wp-content/debug.log
 ./bin/make-oversized-pdf.sh             # a 51 MB PDF, for the size limit
 ./reset.sh                              # delete everything and start again

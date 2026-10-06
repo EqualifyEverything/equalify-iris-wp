@@ -40,16 +40,20 @@ production service for testing: it reports conversion problems as public GitHub 
 
 ## Checking your work
 
-There is no automated test suite. Before every commit:
+Before every commit:
 
 ```bash
-find plugin/equalify-iris -name '*.php' -exec php -l {} \; | grep -v 'No syntax errors'
-phpcs --standard=WordPress plugin/equalify-iris     # composer global require wp-coding-standards/wpcs
+.github/scripts/php-checks.sh plugin/equalify-iris/includes/class-tagger.php   # the files you changed
+test-site/smoke.sh                                                             # one PDF, end to end
 ```
 
-A parse error in a network-activated plugin takes down every site at once. Then run whichever parts
-of the checklist in [test-site/README.md](../test-site/README.md#things-worth-testing) your change
-touches.
+`php-checks.sh` needs Docker. It runs `php -l` under PHP 8.0, PHPCompatibility, and WordPress's
+security sniffs. A parse error in a network-activated plugin takes down every site at once.
+`smoke.sh` tags one PDF against the mock Iris and checks the link a visitor sees. Then run whichever
+parts of the checklist in [test-site/README.md](../test-site/README.md#things-worth-testing) your
+change touches.
+
+Every pull request gets the same checks and a review: see [CI.md](CI.md).
 
 ## Where to make a change
 

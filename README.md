@@ -139,7 +139,8 @@ quicker: a run reads roughly 20 seconds' worth of posts on each site before movi
 ## What is in this repo
 
 ```
-docs/                     How it works, developing, troubleshooting
+.github/                  The automated review and maintainer workflows
+docs/                     How it works, developing, troubleshooting, CI
 plugin/equalify-iris/     The plugin. This is the thing that ships.
 test-site/                A disposable WordPress multisite for testing it
 ```
@@ -149,4 +150,5 @@ test-site/                A disposable WordPress multisite for testing it
 | Understand how it works | [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) |
 | Fix something that is not working | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Change the code | [docs/DEVELOPING.md](docs/DEVELOPING.md) |
+| Understand the automated review and the maintainer | [docs/CI.md](docs/CI.md) |
 | Run it locally | [test-site/README.md](test-site/README.md) |
