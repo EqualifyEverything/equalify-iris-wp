@@ -29,7 +29,8 @@ name: Iris WP Maintainer
 # REQUIRES
 #
 #   - secret  AWS_BEDROCK_ROLE_ARN: the OIDC role for Bedrock. Its trust policy must allow this
-#     repository's `ref:refs/heads/main` subject (an `issues` event runs on the default branch).
+#     repository's `ref:refs/heads/main` subject (an `issues` event runs on the default branch), in
+#     the ID-based form this repository uses: see docs/CI.md.
 #   - variable BEDROCK_BUILD_MODEL or BEDROCK_REVIEW_MODEL (optional): the model.
 #   - the `Ready for Build` label.
 #   - Settings → Actions → "Allow GitHub Actions to create and approve pull requests".

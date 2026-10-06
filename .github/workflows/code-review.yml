@@ -16,7 +16,8 @@ name: Code Review
 # REQUIRES
 #
 #   - secret  AWS_BEDROCK_ROLE_ARN: the OIDC role for Bedrock. Its trust policy must allow this
-#     repository's `pull_request` subject, and `ref:refs/heads/main` for a manual run.
+#     repository's `pull_request` subject, and `ref:refs/heads/main` for a manual run, in the
+#     ID-based form this repository uses: see docs/CI.md.
 #   - variable BEDROCK_REVIEW_MODEL (optional): the model.
 #   - Settings → Actions → "Allow GitHub Actions to create and approve pull requests", or every
 #     `--approve` and `--request-changes` fails.

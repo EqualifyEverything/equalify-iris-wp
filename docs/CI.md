@@ -69,8 +69,10 @@ and makes `iris.equalify.uic.edu` resolve to nowhere inside the web container.
 The repository needs:
 
 - the secret `AWS_BEDROCK_ROLE_ARN`: an IAM role with Bedrock invoke rights, whose trust policy
-  allows `repo:EqualifyEverything/equalify-iris-wp:pull_request` and
-  `repo:EqualifyEverything/equalify-iris-wp:ref:refs/heads/main`;
+  allows `repo:EqualifyEverything@128076491/equalify-iris-wp@1332230564:pull_request` and
+  `repo:EqualifyEverything@128076491/equalify-iris-wp@1332230564:ref:refs/heads/main`. This
+  repository uses GitHub's ID-based subjects, so the plain `repo:EqualifyEverything/equalify-iris-wp`
+  form does not match. Today that is `role/equalify-iris-gha-bedrock-review`, shared with Iris;
 - the `Ready for Build` label;
 - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests";
 - branch protection on `main`, because the maintainer job can push branches.
