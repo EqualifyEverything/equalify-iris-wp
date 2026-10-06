@@ -50,6 +50,14 @@ if ( '/v1/sessions' === $path && 'POST' === $method ) {
 		fail( 400, 'invalid_request', 'No file was uploaded.' );
 	}
 
+	// Like Iris, which counts with pdfinfo before anything else. The samples are
+	// uncompressed, so their page objects can simply be counted.
+	$pages = preg_match_all( '#/Type\s*/Page(?![a-zA-Z])#', (string) file_get_contents( $_FILES['images']['tmp_name'] ) );
+
+	if ( $pages > 25 ) {
+		fail( 400, 'invalid_request', "This PDF has {$pages} pages; the maximum supported is 25. Please split it." );
+	}
+
 	$id = bin2hex( random_bytes( 8 ) );
 	move_uploaded_file( $_FILES['images']['tmp_name'], "$dir/$id.pdf" );
 	file_put_contents( "$dir/$id.json", json_encode( array( 'name' => $_FILES['images']['name'], 'checks' => 0 ) ) );

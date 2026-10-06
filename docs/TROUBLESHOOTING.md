@@ -33,6 +33,18 @@ PDFs say "Queued" and never move, or a site's list says it is still reading.
    (`EQUALIFY_IRIS_MAX_AT_IRIS`), so on a network with thousands queued, a PDF can wait days for its
    turn. "PDFs at Iris now" on the network screen shows it.
 
+## "This looks like a copy of…"
+
+The job remembers the network's address and environment type (`WP_ENVIRONMENT_TYPE`) from its
+first run. Where either differs, it is paused: nothing is sent to Iris, and runs do nothing. This is
+meant for staging and development copies made from the live database. They hold live's PDFs at
+Iris, and would otherwise fetch and close them before live could.
+
+- **A copy that should tag its own PDFs:** Network Admin → Equalify Iris → **Tag PDFs Here Too**, or
+  `wp equalify-iris resume`. Any PDFs it shared with live at Iris are sent again from the copy.
+- **The live site after a domain change, or after setting `WP_ENVIRONMENT_TYPE`:** the same button.
+  It records the new address. PDFs that were at Iris are sent again.
+
 ## PDFs stay at "Being tagged"
 
 Iris takes a few minutes to convert a PDF, then has to build the tagged copy while the job waits for
@@ -71,7 +83,8 @@ The reason is shown on the Equalify Iris screen and by `status`.
 1. **Is it tagged?** On the Equalify Iris screen it says "Tagged" and **View Iris-Tagged Version**
    works.
 2. **Is the page cached?** Clear the page cache. Check logged out; logged-in visitors usually skip
-   the cache.
+   the cache. Tagged copies get a new `?v=` each time they are saved, so a CDN caching the PDF itself
+   is not the problem. The page linking to it is.
 3. **Is the page built by WordPress's front end?** The whole page is switched as it is sent, so
    menus, widgets and theme templates are covered. Pages served some other way (a headless
    front end, a static export, the REST API) are not.

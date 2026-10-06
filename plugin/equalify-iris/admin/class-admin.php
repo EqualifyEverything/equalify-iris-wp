@@ -44,6 +44,7 @@ class Equalify_Iris_Admin {
 		add_action( 'admin_post_equalify_iris_tag', array( __CLASS__, 'handle_tag' ) );
 		add_action( 'admin_post_equalify_iris_remove', array( __CLASS__, 'handle_remove' ) );
 		add_action( 'admin_post_equalify_iris_tag_all', array( __CLASS__, 'handle_tag_all' ) );
+		add_action( 'admin_post_equalify_iris_resume', array( __CLASS__, 'handle_resume' ) );
 		add_action( 'network_admin_edit_equalify_iris_save_network', array( __CLASS__, 'save_network' ) );
 		add_action( 'network_admin_edit_equalify_iris_tag_site', array( __CLASS__, 'handle_tag_site' ) );
 		add_action( 'network_admin_edit_equalify_iris_read_site', array( __CLASS__, 'handle_read_site' ) );
@@ -144,6 +145,7 @@ class Equalify_Iris_Admin {
 			'queued-all' => array( 'success', __( 'Equalify Iris will add accessibility tags to these PDFs. It usually takes a few minutes each.', 'equalify-iris' ) ),
 			'removed'    => array( 'success', __( 'The Iris-tagged version was deleted. Links point at the original PDF again.', 'equalify-iris' ) ),
 			'reading'    => array( 'success', __( 'Equalify Iris will look for PDFs on this site in the next few minutes.', 'equalify-iris' ) ),
+			'resumed'    => array( 'success', __( 'Equalify Iris runs here from now on. PDFs the original site had at Iris are sent again from here.', 'equalify-iris' ) ),
 			'not-public' => array( 'error', __( 'Only PDFs that visitors can reach from this site’s published content can be sent to Iris.', 'equalify-iris' ) ),
 		);
 
@@ -234,6 +236,59 @@ class Equalify_Iris_Admin {
 		);
 	}
 
+	/**
+	 * This is a copy of the network the job was set up on, so it is paused. Shown
+	 * on both screens; the button only to whoever may resume it.
+	 */
+	private static function copy_notice(): void {
+		if ( ! Equalify_Iris_Settings::is_copy() ) {
+			return;
+		}
+
+		$home = (array) Equalify_Iris_Settings::original_home();
+		?>
+		<div class="notice notice-warning inline">
+			<p>
+				<?php
+				echo esc_html(
+					sprintf(
+						/* translators: 1: an address such as example.org/, 2: an environment type such as production. */
+						__( 'This looks like a copy of %1$s (%2$s), such as a staging site made from its database, so Equalify Iris is paused here. Nothing is sent to Iris, so the PDFs the original site has there are left to it. Links to PDFs already tagged still point at the tagged copies.', 'equalify-iris' ),
+						(string) ( $home['address'] ?? '' ),
+						(string) ( $home['environment'] ?? '' )
+					)
+				);
+				?>
+			</p>
+			<?php if ( current_user_can( self::resume_cap() ) ) : ?>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="equalify_iris_resume" />
+					<?php wp_nonce_field( 'equalify_iris_resume' ); ?>
+					<p>
+						<?php submit_button( __( 'Tag PDFs Here Too', 'equalify-iris' ), 'secondary', 'submit', false ); ?>
+						<?php esc_html_e( 'Only if this site should tag its own PDFs. Any it shares with the original are sent to Iris again.', 'equalify-iris' ); ?>
+					</p>
+				</form>
+			<?php else : ?>
+				<p><?php esc_html_e( 'A network administrator can turn it back on.', 'equalify-iris' ); ?></p>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	private static function resume_cap(): string {
+		return is_multisite() ? 'manage_network_options' : 'manage_options';
+	}
+
+	public static function handle_resume(): void {
+		self::require_cap( self::resume_cap() );
+		check_admin_referer( 'equalify_iris_resume' );
+
+		Equalify_Iris_Runner::resume_here();
+
+		self::redirect( is_multisite() ? self::network_page_url() : self::site_page_url(), 'resumed' );
+	}
+
 	public static function render_site_page(): void {
 		// Opening the screen is what starts a site reading its content.
 		if ( ! Equalify_Iris_Discovery::indexed() ) {
@@ -252,6 +307,7 @@ class Equalify_Iris_Admin {
 
 			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from this site’s published pages, posts, menus and widgets, so screen readers can read them in order, with headings, lists and tables. The original file is kept; links on this site point at the tagged copy instead. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
 
+			<?php self::copy_notice(); ?>
 			<?php self::refused_notice(); ?>
 
 			<?php if ( ! Equalify_Iris_Settings::auto_enabled() && $untagged ) : ?>
@@ -466,6 +522,7 @@ class Equalify_Iris_Admin {
 
 			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from each site’s published pages, posts, menus and widgets. Links point at the tagged copy; the original file is kept. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
 
+			<?php self::copy_notice(); ?>
 			<?php self::refused_notice(); ?>
 
 			<form method="post" action="<?php echo esc_url( network_admin_url( 'edit.php?action=equalify_iris_save_network' ) ); ?>">

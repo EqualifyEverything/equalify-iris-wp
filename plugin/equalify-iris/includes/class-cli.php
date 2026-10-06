@@ -26,6 +26,10 @@ class Equalify_Iris_CLI {
 	public function status(): void {
 		WP_CLI::line( 'API address:          ' . Equalify_Iris_Settings::api_url() );
 
+		if ( Equalify_Iris_Settings::is_copy() ) {
+			WP_CLI::warning( self::copy_message() );
+		}
+
 		if ( '' !== Equalify_Iris_Settings::refused() ) {
 			WP_CLI::warning( 'Iris refused to let this network in, so nothing is sent until the settings change: ' . Equalify_Iris_Settings::refused() );
 		}
@@ -155,6 +159,11 @@ class Equalify_Iris_CLI {
 		for ( $i = 1; $i <= $count; $i++ ) {
 			$done = Equalify_Iris_Runner::run( $seconds );
 
+			if ( $done['copy'] ) {
+				WP_CLI::warning( self::copy_message() );
+				return;
+			}
+
 			if ( $done['locked'] ) {
 				WP_CLI::warning( "Run {$i}: another run is still going. Nothing to do." );
 				continue;
@@ -164,6 +173,38 @@ class Equalify_Iris_CLI {
 				sprintf( 'Run %d: %d sites, %d queued, %d uploaded, %d tagged, %d failed. %d sites still waiting.', $i, $done['sites'], $done['queued'], $done['uploaded'], $done['tagged'], $done['failed'], Equalify_Iris_Runner::waiting() )
 			);
 		}
+	}
+
+	/**
+	 * Let this copy of the site tag its own PDFs.
+	 *
+	 * The job stops by itself on a copy of the network it was set up on, such
+	 * as a staging site made from the live database, because the copy has the
+	 * live site's PDFs that are at Iris. Run this on the copy only if it should
+	 * tag PDFs too: those PDFs are left to the live site and sent again from here.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp equalify-iris resume --url=staging.example.org
+	 */
+	public function resume(): void {
+		if ( ! Equalify_Iris_Settings::is_copy() ) {
+			WP_CLI::success( 'This is where the job was set up. Nothing to resume.' );
+			return;
+		}
+
+		Equalify_Iris_Runner::resume_here();
+		WP_CLI::success( 'The job runs here from now on.' );
+	}
+
+	private static function copy_message(): string {
+		$home = (array) Equalify_Iris_Settings::original_home();
+
+		return sprintf(
+			'This looks like a copy of %1$s (%2$s), so the job is paused here and nothing is sent to Iris. To tag PDFs here as well: wp equalify-iris resume',
+			$home['address'] ?? '?',
+			$home['environment'] ?? '?'
+		);
 	}
 
 	private function list_pdfs(): void {

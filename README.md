@@ -92,6 +92,26 @@ Two constants in `wp-config.php` change the defaults:
 | `EQUALIFY_IRIS_RUN_SECONDS` | `90` | How long one run may last. Keep it 30 seconds under the host's limit. |
 | `EQUALIFY_IRIS_MAX_AT_IRIS` | `4` | PDFs at Iris at once, across the network. |
 
+### Hosting notes
+
+These hold on any host. Pantheon is the example because it has all of them.
+
+- **Staging and development copies pause themselves.** The job remembers the network's address and
+  environment type (`WP_ENVIRONMENT_TYPE`). A copy made from the live database (Pantheon's dev,
+  test and multidev environments, or a local copy) has a different address or type, so it sends
+  nothing to Iris until a super admin presses **Tag PDFs Here Too** on the network screen, or runs
+  `wp equalify-iris resume`. Otherwise the copy would collect, and close, the PDFs live had at
+  Iris. Moving the live site to a new domain pauses it the same way, and the same button resumes it.
+- **CDNs get a fresh address for each tagged copy.** Tagging a PDF again keeps its filename, so
+  links carry `?v=` and the time it was saved. Pantheon's CDN and others then never serve the copy
+  it replaced.
+- **Locked environments.** Behind HTTP authentication (Pantheon's Lock Environment, or basic auth
+  anywhere), WordPress cannot reach its own `wp-cron.php`. Use the scheduler above there.
+- **Only the uploads folder needs to be writable.** On Pantheon that is `files/`. Nothing is
+  written to `/tmp`, which Pantheon's app servers do not share.
+- **An Iris deployment that only accepts known IP addresses** needs your host's outgoing address,
+  and Pantheon's is not fixed without Secure Integration.
+
 **How fast it goes** is set by Iris, not WordPress: a PDF takes a few minutes to tag, and the public
 deployment works on two at once. Expect hundreds of PDFs a day, not thousands. Reading content is
 quicker: a run reads roughly 20 seconds' worth of posts on each site before moving to the next.
@@ -104,7 +124,9 @@ quicker: a run reads roughly 20 seconds' worth of posts on each site before movi
   switches that turn automatic tagging on.
 - **The deployment you point it at is trusted.** Its tagged PDFs are served in place of the
   originals. The API address must use https.
-- **PDFs over 25 pages or 50 MB are not tagged.** The plugin checks before uploading and says why.
+- **PDFs over 25 pages or 50 MB are not tagged.** The plugin checks the size before uploading;
+  Iris checks the pages the moment the file arrives, before it converts anything or files an
+  issue. Either way the screen says why.
 - **Iris hands back a tagged PDF in a single request that can take minutes.** A run waits as long
   as it has left, about 80 seconds on Pantheon. A PDF Iris takes longer than that over is tried
   three times, then marked as could not be tagged, with the reason. Large or complicated PDFs are

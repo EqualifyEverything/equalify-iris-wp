@@ -97,9 +97,15 @@ class Equalify_Iris_Links {
 					return $m[0];
 				}
 
-				$tagged = $base . '/' . implode( '/', array_map( 'rawurlencode', explode( '/', $map[ $file ] ) ) );
+				$tagged = esc_url( self::url( $base, $map[ $file ] ) );
+				$rest   = $m[5];
 
-				return $m[1] . $m[2] . $m[3] . esc_url( $tagged ) . $m[5] . $m[3];
+				// The link's own query string joins ours: one `?` only.
+				if ( str_starts_with( $rest, '?' ) && false !== strpos( $tagged, '?' ) ) {
+					$rest = '&#038;' . substr( $rest, 1 );
+				}
+
+				return $m[1] . $m[2] . $m[3] . $tagged . $rest . $m[3];
 			},
 			$html
 		);
@@ -107,5 +113,20 @@ class Equalify_Iris_Links {
 		// null when PCRE gives up, on a very large page, say. The page as it was
 		// beats an empty one.
 		return null === $swapped ? $html : $swapped;
+	}
+
+	/**
+	 * A tagged copy's address, from its entry in the link map.
+	 *
+	 * Tagging a PDF again keeps the file's name, and CDNs and browsers keep
+	 * files from the uploads folder for days. `?v=` with when it was saved gives
+	 * each copy an address of its own, so nobody is sent the one it replaced.
+	 */
+	public static function url( string $base, string $entry ): string {
+		list( $file, $version ) = explode( '?v=', $entry, 2 ) + array( '', '' );
+
+		$url = untrailingslashit( $base ) . '/' . implode( '/', array_map( 'rawurlencode', explode( '/', $file ) ) );
+
+		return '' !== $version ? $url . '?v=' . (int) $version : $url;
 	}
 }

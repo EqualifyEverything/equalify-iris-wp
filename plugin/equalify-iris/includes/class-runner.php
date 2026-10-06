@@ -33,6 +33,11 @@
  * or the editor, so they see it start without waiting for the schedule; and
  * `wp equalify-iris run`, for a real scheduler. They all take the same lock (see
  * lock()), so two runs never overlap.
+ *
+ * COPIES OF THE SITE
+ *
+ * None of these do anything on a copy of the network, such as a staging site
+ * made from the live database, until someone says so (see resume_here()).
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -107,7 +112,7 @@ class Equalify_Iris_Runner {
 			return;
 		}
 
-		if ( get_site_transient( 'equalify_iris_nudged' ) || ! self::waiting() ) {
+		if ( get_site_transient( 'equalify_iris_nudged' ) || Equalify_Iris_Settings::is_copy() || ! self::waiting() ) {
 			return;
 		}
 
@@ -130,7 +135,7 @@ class Equalify_Iris_Runner {
 		add_action(
 			'shutdown',
 			static function () {
-				if ( ! get_site_transient( 'equalify_iris_kicked' ) && ! self::running() ) {
+				if ( ! get_site_transient( 'equalify_iris_kicked' ) && ! Equalify_Iris_Settings::is_copy() && ! self::running() ) {
 					set_site_transient( 'equalify_iris_kicked', 1, MINUTE_IN_SECONDS );
 					self::start_now();
 				}
@@ -168,6 +173,39 @@ class Equalify_Iris_Runner {
 		);
 	}
 
+	/**
+	 * Let a copy of the network tag its own PDFs (see
+	 * Equalify_Iris_Settings::is_copy()).
+	 *
+	 * The PDFs it has at Iris are the original's: their sessions are left to the
+	 * original, and these are sent again from here. There are only ever a few.
+	 */
+	public static function resume_here(): void {
+		foreach ( array_keys( self::at_iris() ) as $key ) {
+			list( $site_id, $id ) = array_map( 'intval', explode( ':', (string) $key ) + array( 0, 0 ) );
+
+			if ( is_multisite() && ! get_site( $site_id ) ) {
+				continue;
+			}
+
+			if ( is_multisite() ) {
+				switch_to_blog( $site_id );
+			}
+
+			Equalify_Iris_Tagger::start_over( $id );
+
+			if ( is_multisite() ) {
+				restore_current_blog();
+			}
+
+			self::wake( $site_id );
+		}
+
+		delete_site_option( self::AT_IRIS );
+		Equalify_Iris_Settings::remember_home();
+		self::kick();
+	}
+
 	public static function on_new_site( WP_Site $site ): void {
 		if ( Equalify_Iris_Settings::network_auto() ) {
 			self::wake( (int) $site->blog_id );
@@ -199,12 +237,22 @@ class Equalify_Iris_Runner {
 	 * Work through the sites that are due until the time is up.
 	 *
 	 * @param int $seconds 0 for run_seconds().
-	 * @return array{sites: int, queued: int, uploaded: int, tagged: int, failed: int, locked: bool}
+	 * @return array{sites: int, queued: int, uploaded: int, tagged: int, failed: int, locked: bool, copy: bool}
 	 */
 	public static function run( int $seconds = 0 ): array {
 		$seconds  = $seconds > 0 ? $seconds : self::run_seconds();
 		$deadline = time() + $seconds;
-		$done     = array( 'sites' => 0, 'queued' => 0, 'uploaded' => 0, 'tagged' => 0, 'failed' => 0, 'locked' => false );
+		$done     = array( 'sites' => 0, 'queued' => 0, 'uploaded' => 0, 'tagged' => 0, 'failed' => 0, 'locked' => false, 'copy' => false );
+
+		// A copy of the network does nothing until someone says it should.
+		if ( Equalify_Iris_Settings::is_copy() ) {
+			$done['copy'] = true;
+			return $done;
+		}
+
+		if ( ! Equalify_Iris_Settings::original_home() ) {
+			Equalify_Iris_Settings::remember_home();
+		}
 
 		if ( ! self::lock( $seconds ) ) {
 			$done['locked'] = true;

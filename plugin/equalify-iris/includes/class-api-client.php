@@ -38,6 +38,11 @@
  * plain http is refused except to this machine, or when wp-config.php says
  * otherwise (see Equalify_Iris_Settings::url_is_allowed()).
  *
+ * COPIES
+ *
+ * A staging copy of the site has the live site's sessions. It sends nothing
+ * about a PDF until someone says it should (see blocked()).
+ *
  * WHAT WE TRUST IRIS WITH
  *
  * The tagged PDF Iris sends back is saved in the uploads folder and served to
@@ -68,8 +73,11 @@ class Equalify_Iris_API_Client {
 	/** Seconds to wait for a connection, for the uploads sent with cURL. */
 	const TIMEOUT_CONNECT = 10;
 
-	/** A tagged PDF more than this many times the original's size is not one. */
-	const MAX_GROWTH = 4;
+	/**
+	 * A tagged PDF is the original plus its tags: more than twice the size, and
+	 * 5 MB on top, is not this document.
+	 */
+	const MAX_GROWTH = 2;
 
 	// -----------------------------------------------------------------------
 	// Requests
@@ -90,6 +98,19 @@ class Equalify_Iris_API_Client {
 			__( 'The Equalify Iris API address must start with https://. Plain http is only allowed to this server itself, or with EQUALIFY_IRIS_ALLOW_HTTP in wp-config.php.', 'equalify-iris' ),
 			array( 'refused' => true )
 		);
+	}
+
+	/**
+	 * Nothing about a PDF is sent from a copy of the network: its sessions are the
+	 * original's (see Equalify_Iris_Settings::is_copy()). Asking what the
+	 * deployment can do is still fine.
+	 */
+	private static function blocked() {
+		if ( Equalify_Iris_Settings::is_copy() ) {
+			return new WP_Error( 'equalify_iris_copy', __( 'Equalify Iris is paused on this copy of the site.', 'equalify-iris' ) );
+		}
+
+		return self::insecure();
 	}
 
 	/**
@@ -303,7 +324,7 @@ class Equalify_Iris_API_Client {
 	 * @return array{session_id: string, status: string}|WP_Error
 	 */
 	public static function create_session( string $file_path ) {
-		$insecure = self::insecure();
+		$insecure = self::blocked();
 
 		if ( $insecure ) {
 			return $insecure;
@@ -411,7 +432,7 @@ class Equalify_Iris_API_Client {
 
 	/** @return array{status: string, error?: string}|WP_Error */
 	public static function get_session( string $session_id ) {
-		$insecure = self::insecure();
+		$insecure = self::blocked();
 
 		if ( $insecure ) {
 			return $insecure;
@@ -440,23 +461,34 @@ class Equalify_Iris_API_Client {
 	 *                                                         the tagger's warning codes.
 	 */
 	public static function tagged_pdf( string $session_id, int $timeout = self::TIMEOUT_TAG, int $original = 0 ) {
-		$insecure = self::insecure();
+		$insecure = self::blocked();
 
 		if ( $insecure ) {
 			return $insecure;
 		}
 
-		$data = self::handle(
-			wp_remote_post(
-				self::url( '/sessions/' . rawurlencode( $session_id ) . '/pdf' ),
-				array(
-					'timeout' => $timeout,
-					'headers' => self::headers( array( 'Content-Type' => 'application/json' ) ),
-					'body'    => wp_json_encode( array( 'retag' => true ) ),
-				)
-			),
-			$timeout
+		// The PDF comes back base64 in JSON, a third bigger again. Read no more
+		// than the largest answer we would keep, so a runaway one cannot use up
+		// PHP's memory before it is refused.
+		$most  = self::most_tagged_bytes( $original );
+		$limit = (int) ceil( $most * 4 / 3 ) + 65536;
+
+		$response = wp_remote_post(
+			self::url( '/sessions/' . rawurlencode( $session_id ) . '/pdf' ),
+			array(
+				'timeout'             => $timeout,
+				'headers'             => self::headers( array( 'Content-Type' => 'application/json' ) ),
+				'body'                => wp_json_encode( array( 'retag' => true ) ),
+				'limit_response_size' => $limit,
+			)
 		);
+
+		if ( ! is_wp_error( $response ) && strlen( (string) wp_remote_retrieve_body( $response ) ) >= $limit ) {
+			return self::too_big();
+		}
+
+		$data = self::handle( $response, $timeout );
+		unset( $response );
 
 		if ( is_wp_error( $data ) ) {
 			return $data;
@@ -469,11 +501,8 @@ class Equalify_Iris_API_Client {
 			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back something that is not a whole PDF.', 'equalify-iris' ) );
 		}
 
-		// Tags add a little; anything far bigger is not this document.
-		$most = max( $original * self::MAX_GROWTH, 5 * MB_IN_BYTES );
-
-		if ( strlen( $pdf ) > min( $most, Equalify_Iris_Settings::MAX_FILE_BYTES * self::MAX_GROWTH ) ) {
-			return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back a PDF far bigger than the original, so it was not saved.', 'equalify-iris' ), array( 'permanent' => true ) );
+		if ( strlen( $pdf ) > $most ) {
+			return self::too_big();
 		}
 
 		$warnings = array();
@@ -490,12 +519,23 @@ class Equalify_Iris_API_Client {
 		);
 	}
 
+	/** The most bytes a tagged copy of a PDF this size may have. */
+	private static function most_tagged_bytes( int $original ): int {
+		$original = $original > 0 ? min( $original, Equalify_Iris_Settings::MAX_FILE_BYTES ) : Equalify_Iris_Settings::MAX_FILE_BYTES;
+
+		return $original * self::MAX_GROWTH + 5 * MB_IN_BYTES;
+	}
+
+	private static function too_big(): WP_Error {
+		return new WP_Error( 'equalify_iris_bad_response', __( 'Equalify Iris sent back a PDF far bigger than the original, so it was not saved.', 'equalify-iris' ), array( 'permanent' => true ) );
+	}
+
 	/**
 	 * Tell Iris we are done so it can delete its working files. Best effort: we
 	 * already have the PDF, so a failure here costs us nothing.
 	 */
 	public static function close_session( string $session_id ): void {
-		if ( self::insecure() ) {
+		if ( self::blocked() ) {
 			return;
 		}
 
