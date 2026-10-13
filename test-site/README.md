@@ -62,8 +62,8 @@ ddev wp equalify-iris tag 5    # or Equalify Iris → Send to Iris for Tagging
 ```
 
 **Use the mock unless you mean otherwise.** Real Iris reports problems as public GitHub issues.
-The mock tags nothing; it hands back the original PDF with a comment added, so you can see the link
-switch. Upload a file with `fail` in its name and link it from a published page to see a failed
+The mock tags nothing; it hands back the original PDF with a comment added, so you can tell the
+two apart. Upload a file with `fail` in its name and link it from a published page to see a failed
 conversion, `encrypted` to see a refusal, or `slow` to see the job give up waiting (with
 `ddev wp equalify-iris run --seconds=40`).
 
@@ -79,7 +79,7 @@ ddev wp equalify-iris status            # settings, the job, every PDF on the si
 ddev wp equalify-iris check             # can Iris tag PDFs?
 ddev wp equalify-iris read [--network]  # read a site's content again, or every site's
 ddev wp equalify-iris run               # one run of the job, as a scheduler would
-ddev wp equalify-iris remove 5          # delete a tagged copy
+ddev wp equalify-iris remove 5          # delete a tagged version; the original goes back
 ./smoke.sh                              # tag one PDF from start to finish, against the mock
 ddev exec tail -f wp/wp-content/debug.log
 ./bin/make-oversized-pdf.sh             # a 51 MB PDF, for the size limit
@@ -101,17 +101,22 @@ ddev exec tail -f wp/wp-content/debug.log
 **The list**
 
 - **Send to Iris for Tagging** from a row, from the bulk action, and with the "all untagged" button.
-- After a few ticks: **View Iris-Tagged Version** opens `name-accessible.pdf`; **Delete Iris-Tagged
-  Version** asks first, then removes it.
+- After a few ticks: **View Iris-Tagged Version** opens the PDF's own address, with `?v=`, and
+  `name-iris-original.pdf` is beside it. **Delete Iris-Tagged Version** asks first, then puts the
+  original back at that address.
+- Media → Library, list view: the Equalify Iris column says which PDFs are tagged. A PDF's details
+  (grid view, or its edit screen) say the same.
 - The 30-page PDF fails with Iris's sentence about pages, refused as it is uploaded.
 - An editor or subscriber has no Equalify Iris menu, and a direct URL is refused.
 
 **Links**
 
-- Logged out, every link to a tagged PDF opens the tagged copy, including both on Linked Twice, and
-  the ones in the menu, widget and category archive.
+- Logged out, every link to a tagged PDF opens the tagged version with `?v=`, including both on
+  Linked Twice, and the ones in the menu, widget and category archive.
+- The PDF's plain address, with nothing after it, is the tagged version too.
 - The example.org link and untagged PDFs are unchanged.
-- Delete the tagged copy, or deactivate the plugin: the links go back.
+- Delete the tagged version: the plain address is the original again.
+- Deactivate the plugin: links lose their `?v=`, but still open the tagged version.
 
 **Copies of the site**
 
@@ -139,10 +144,12 @@ ddev exec tail -f wp/wp-content/debug.log
 
 **Lifecycle**
 
-- Deleting an attachment deletes its tagged copy.
+- Deleting an attachment deletes its kept original.
+- A 0.2.x tagged copy (`name-accessible.pdf`, which `smoke.sh` fakes) is moved to the PDF's own
+  address by the next run.
 - Deactivate halfway through, reactivate: sites that used it read their content again and carry on.
-- Delete the plugin: no `-accessible.pdf` files, no `_equalify_iris_` meta, no `equalify_iris_`
-  options left.
+- Delete the plugin: every tagged PDF's address is its original again, and no `-iris-original.pdf`
+  or `-accessible.pdf` files, no `_equalify_iris_` meta, no `equalify_iris_` options are left.
 
 ## When it goes wrong
 

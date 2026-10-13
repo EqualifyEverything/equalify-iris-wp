@@ -63,6 +63,9 @@ class Equalify_Iris_Runner {
 	const LAST_RUN = 'equalify_iris_last_run';
 	const AT_IRIS  = 'equalify_iris_at_iris';
 
+	/** Network option: every site that may have 0.2.x tagged copies to move has been made due. */
+	const MOVING = 'equalify_iris_moving';
+
 	/** Seconds one site gets to read content before the run moves on. */
 	const SLICE = 20;
 
@@ -266,6 +269,7 @@ class Equalify_Iris_Runner {
 		try {
 			update_site_option( self::LAST_RUN, time() );
 			self::forget_stale_sessions();
+			self::wake_for_moving();
 
 			$seen = array();
 
@@ -508,22 +512,36 @@ class Equalify_Iris_Runner {
 	}
 
 	/**
+	 * Once, after updating from 0.2.x: tagged copies saved beside their originals
+	 * are moved to the originals' addresses by each site's share of the job (see
+	 * Equalify_Iris_Tagger::move_old_copies()). Only sites that used the plugin can
+	 * have any, and a quiet one may not be due for months, so they are all made due.
+	 */
+	private static function wake_for_moving(): void {
+		if ( ! get_site_option( self::MOVING ) ) {
+			self::wake_all( self::USED );
+			update_site_option( self::MOVING, 1 );
+		}
+	}
+
+	/**
 	 * Make every site on the network due now, in two queries whatever its size.
 	 *
-	 * @param bool $only_auto Only the sites whose admins turned on automatic tagging.
+	 * @param string $only Only the sites with this blogmeta: AUTO, the sites whose
+	 *                     admins turned on automatic tagging, or USED.
 	 */
-	public static function wake_all( bool $only_auto = false ): void {
+	public static function wake_all( string $only = '' ): void {
 		global $wpdb;
 
 		if ( ! is_multisite() ) {
-			if ( ! $only_auto || Equalify_Iris_Settings::site_auto() ) {
+			if ( self::AUTO !== $only || Equalify_Iris_Settings::site_auto() ) {
 				self::wake();
 			}
 			return;
 		}
 
 		$now  = time();
-		$auto = $only_auto ? $wpdb->prepare( " AND EXISTS ( SELECT 1 FROM {$wpdb->blogmeta} a WHERE a.blog_id = b.blog_id AND a.meta_key = %s )", self::AUTO ) : '';
+		$auto = '' !== $only ? $wpdb->prepare( " AND EXISTS ( SELECT 1 FROM {$wpdb->blogmeta} a WHERE a.blog_id = b.blog_id AND a.meta_key = %s )", $only ) : '';
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$wpdb->query(

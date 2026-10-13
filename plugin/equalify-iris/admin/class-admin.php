@@ -13,7 +13,7 @@
  *   Equalify Iris                   (each site's admins)
  *     Whether this site's PDFs are tagged automatically, and the list of PDFs
  *     visitors can reach from its published content, each of which can be
- *     tagged, viewed or have its tagged copy deleted. With the network switch
+ *     tagged, viewed or have its tagged version deleted. With the network switch
  *     on, the site switch is not shown: a super admin has already decided.
  *
  * A site's content is only read once someone opens its screen, tags a PDF, or
@@ -95,7 +95,7 @@ class Equalify_Iris_Admin {
 	 * Tell a site admin when visitors are getting untagged PDFs.
 	 *
 	 * Only when automatic tagging is off and a published page links to a PDF with
-	 * no tagged copy, and not on the Equalify Iris screen, which already says so.
+	 * no tagged version, and not on the Equalify Iris screen, which already says so.
 	 * The answer is kept for a few minutes: this runs on every admin page.
 	 */
 	public static function untagged_notice(): void {
@@ -141,9 +141,10 @@ class Equalify_Iris_Admin {
 		$messages = array(
 			'saved'      => array( 'success', __( 'Settings saved.', 'equalify-iris' ) ),
 			'connected'  => array( 'success', __( 'Connected. This Equalify Iris deployment can tag PDFs.', 'equalify-iris' ) ),
-			'queued'     => array( 'success', __( 'Equalify Iris will add accessibility tags to this PDF. It usually takes a few minutes; links switch to the tagged version once it is ready.', 'equalify-iris' ) ),
+			'queued'     => array( 'success', __( 'Equalify Iris will add accessibility tags to this PDF. It usually takes a few minutes; once it is ready, the PDF’s address opens the tagged version.', 'equalify-iris' ) ),
 			'queued-all' => array( 'success', __( 'Equalify Iris will add accessibility tags to these PDFs. It usually takes a few minutes each.', 'equalify-iris' ) ),
-			'removed'    => array( 'success', __( 'The Iris-tagged version was deleted. Links point at the original PDF again.', 'equalify-iris' ) ),
+			'removed'    => array( 'success', __( 'The Iris-tagged version was deleted, and the original PDF is back at its address.', 'equalify-iris' ) ),
+			'kept'       => array( 'error', __( 'An original PDF could not be found, so its Iris-tagged version stays at its address. Nothing else about it changed.', 'equalify-iris' ) ),
 			'reading'    => array( 'success', __( 'Equalify Iris will look for PDFs on this site in the next few minutes.', 'equalify-iris' ) ),
 			'resumed'    => array( 'success', __( 'Equalify Iris runs here from now on. PDFs the original site had at Iris are sent again from here.', 'equalify-iris' ) ),
 			'not-public' => array( 'error', __( 'Only PDFs that visitors can reach from this site’s published content can be sent to Iris.', 'equalify-iris' ) ),
@@ -253,7 +254,7 @@ class Equalify_Iris_Admin {
 				echo esc_html(
 					sprintf(
 						/* translators: 1: an address such as example.org/, 2: an environment type such as production. */
-						__( 'This looks like a copy of %1$s (%2$s), such as a staging site made from its database, so Equalify Iris is paused here. Nothing is sent to Iris, so the PDFs the original site has there are left to it. Links to PDFs already tagged still point at the tagged copies.', 'equalify-iris' ),
+						__( 'This looks like a copy of %1$s (%2$s), such as a staging site made from its database, so Equalify Iris is paused here. Nothing is sent to Iris, so the PDFs the original site has there are left to it. PDFs already tagged stay tagged.', 'equalify-iris' ),
 						(string) ( $home['address'] ?? '' ),
 						(string) ( $home['environment'] ?? '' )
 					)
@@ -305,7 +306,7 @@ class Equalify_Iris_Admin {
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Equalify Iris', 'equalify-iris' ); ?></h1>
 
-			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from this site’s published pages, posts, menus and widgets, so screen readers can read them in order, with headings, lists and tables. The original file is kept; links on this site point at the tagged copy instead. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
+			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from this site’s published pages, posts, menus and widgets, so screen readers can read them in order, with headings, lists and tables. The tagged version replaces the PDF at its own address, so every link to it opens the tagged version, on this site or anywhere else. The original is kept, so it can be put back. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
 
 			<?php self::copy_notice(); ?>
 			<?php self::refused_notice(); ?>
@@ -353,7 +354,7 @@ class Equalify_Iris_Admin {
 					<?php wp_nonce_field( 'equalify_iris_tag_all' ); ?>
 					<?php
 					submit_button(
-						/* translators: %d: how many PDFs have no tagged copy. */
+						/* translators: %d: how many PDFs have no tagged version. */
 						sprintf( _n( 'Send the %d untagged PDF to Iris for Tagging', 'Send all %d untagged PDFs to Iris for Tagging', $untagged, 'equalify-iris' ), $untagged ),
 						'secondary',
 						'submit',
@@ -457,11 +458,9 @@ class Equalify_Iris_Admin {
 	public static function handle_remove(): void {
 		$attachment_id = self::verify( 'equalify_iris_remove' );
 
-		if ( Equalify_Iris_Tagger::is_pdf( $attachment_id ) ) {
-			Equalify_Iris_Tagger::remove( $attachment_id );
-		}
+		$removed = ! Equalify_Iris_Tagger::is_pdf( $attachment_id ) || Equalify_Iris_Tagger::remove( $attachment_id );
 
-		self::redirect( self::back(), 'removed' );
+		self::redirect( self::back(), $removed ? 'removed' : 'kept' );
 	}
 
 	public static function handle_tag_all(): void {
@@ -485,17 +484,18 @@ class Equalify_Iris_Admin {
 		self::require_cap( 'manage_options' );
 		check_admin_referer( 'bulk-pdfs' );
 
-		$ids = isset( $_REQUEST['attachment'] ) ? array_map( 'absint', (array) wp_unslash( $_REQUEST['attachment'] ) ) : array();
+		$ids    = isset( $_REQUEST['attachment'] ) ? array_map( 'absint', (array) wp_unslash( $_REQUEST['attachment'] ) ) : array();
+		$notice = 'equalify_iris_tag' === $action ? 'queued-all' : 'removed';
 
 		foreach ( $ids as $id ) {
 			if ( 'equalify_iris_tag' === $action ) {
 				Equalify_Iris_Tagger::queue( $id );
-			} elseif ( Equalify_Iris_Tagger::is_pdf( $id ) ) {
-				Equalify_Iris_Tagger::remove( $id );
+			} elseif ( Equalify_Iris_Tagger::is_pdf( $id ) && ! Equalify_Iris_Tagger::remove( $id ) ) {
+				$notice = 'kept';
 			}
 		}
 
-		self::redirect( self::back(), 'equalify_iris_tag' === $action ? 'queued-all' : 'removed' );
+		self::redirect( self::back(), $notice );
 	}
 
 	// -----------------------------------------------------------------------
@@ -520,7 +520,7 @@ class Equalify_Iris_Admin {
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Equalify Iris', 'equalify-iris' ); ?></h1>
 
-			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from each site’s published pages, posts, menus and widgets. Links point at the tagged copy; the original file is kept. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
+			<p><?php esc_html_e( 'Equalify Iris adds accessibility tags to the PDFs linked from each site’s published pages, posts, menus and widgets. The tagged version replaces the PDF at its own address, and the original is kept, so it can be put back. Only public PDFs are sent to Iris.', 'equalify-iris' ); ?></p>
 
 			<?php self::copy_notice(); ?>
 			<?php self::refused_notice(); ?>
@@ -684,7 +684,7 @@ class Equalify_Iris_Admin {
 						$actions[] = sprintf(
 							'<a href="%s">%s<span class="screen-reader-text"> %s</span></a>',
 							esc_url( wp_nonce_url( network_admin_url( 'edit.php?action=equalify_iris_tag_site&site=' . (int) $site->blog_id ), 'equalify_iris_tag_site_' . (int) $site->blog_id ) ),
-							/* translators: %d: how many PDFs have no tagged copy. */
+							/* translators: %d: how many PDFs have no tagged version. */
 							esc_html( sprintf( _n( 'Send %d untagged PDF to Iris for Tagging', 'Send %d untagged PDFs to Iris for Tagging', $untagged, 'equalify-iris' ), $untagged ) ),
 							/* translators: %s: a site's name. */
 							esc_html( sprintf( __( 'on %s', 'equalify-iris' ), $name ) )

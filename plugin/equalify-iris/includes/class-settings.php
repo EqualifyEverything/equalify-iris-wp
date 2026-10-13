@@ -256,9 +256,10 @@ class Equalify_Iris_Settings {
 	}
 
 	/**
-	 * Every PDF on this site that has a tagged version, as original file =>
-	 * tagged file, both relative to the uploads folder. The tagged file may end
-	 * in `?v=` and when it was saved (see Equalify_Iris_Links::url()).
+	 * Every PDF on this site that has a tagged version, as its file => the
+	 * address links should use, both relative to the uploads folder: the same
+	 * file with `?v=` and when the tagged version was saved, or a 0.2.x copy not
+	 * yet moved into place (see Equalify_Iris_Links::url()).
 	 *
 	 * Kept as one option, rather than looked up per link, so that swapping the
 	 * links on a page costs no database queries at all.

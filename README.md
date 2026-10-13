@@ -2,12 +2,26 @@
 
 A WordPress multisite plugin that adds accessibility tags to the PDFs linked from each site's
 published pages, posts, menus and widgets, using [Equalify Iris](https://github.com/EqualifyEverything/equalify-iris),
-and points every link to those PDFs at the tagged copy.
+and puts the tagged version at the PDF's own address.
 
 A screen reader meets an untagged PDF as one long run of text, or as nothing at all. Iris reads each
 page, works out its headings, lists, tables and reading order, and writes that structure back into
-the PDF as tags. Visitors still click the same links and get a PDF; it is just one a screen reader
-can read. The original file is kept, and nothing in your posts is rewritten.
+the PDF as tags. Visitors use the same links, bookmarks and search results, and get a PDF; it is
+just one a screen reader can read. The original is kept beside it as `name-iris-original.pdf`, and
+nothing in your posts is rewritten.
+
+**The tagged version replaces the file itself, not a redirect.** Hosts like Pantheon serve uploads
+without running WordPress, so a redirect could never reach links from email or other websites.
+What that means:
+
+- **Deactivating the plugin** changes nothing visitors see. Tagged PDFs stay tagged, and the
+  originals stay beside them.
+- **Delete Iris-Tagged Version** puts the original back at its address. If the file was replaced
+  since (with another plugin, say), the new file stays and the kept original is deleted.
+- **Deleting a PDF** from the media library deletes its kept original too.
+- **Deleting the plugin** puts every original back where the tagged version is still there.
+- **PDFs tagged by version 0.2**, saved beside the original as `name-accessible.pdf`, are moved to
+  the PDF's own address by the background job, ten per site per run.
 
 **Only public PDFs are touched.** A PDF counts as public when something visitors can see links to
 it:
@@ -31,6 +45,8 @@ their layout outside the post content and custom fields, are not seen.
   when, and Iris's reason when something goes wrong; **Being tagged** and **Could not be tagged**
   show just those. Once tagged, **View Iris-Tagged Version** and **Delete Iris-Tagged
   Version**, one at a time or as bulk actions.
+- **In the media library**, an Equalify Iris column in list view, and a line on each PDF's details,
+  saying whether it is tagged.
 - **Automatic PDF tagging.** One switch: tag every public PDF, including ones linked from pages
   published later.
 - **A dashboard notice** while that switch is off and a public PDF is untagged: *"You are
@@ -102,9 +118,10 @@ These hold on any host. Pantheon is the example because it has all of them.
   nothing to Iris until a super admin presses **Tag PDFs Here Too** on the network screen, or runs
   `wp equalify-iris resume`. Otherwise the copy would collect, and close, the PDFs live had at
   Iris. Moving the live site to a new domain pauses it the same way, and the same button resumes it.
-- **CDNs get a fresh address for each tagged copy.** Tagging a PDF again keeps its filename, so
-  links carry `?v=` and the time it was saved. Pantheon's CDN and others then never serve the copy
-  it replaced.
+- **CDNs.** Links on your pages carry `?v=` and the time the PDF was saved, so they never get a
+  cached copy. On Pantheon, the PDF's own address is cleared from the CDN too, with Pantheon
+  Advanced Page Cache. Elsewhere, a CDN that cached the PDF serves the old file at its plain address
+  until it expires; purge it, or hook `equalify_iris_links_changed`.
 - **Locked environments.** Behind HTTP authentication (Pantheon's Lock Environment, or basic auth
   anywhere), WordPress cannot reach its own `wp-cron.php`. Use the scheduler above there.
 - **Only the uploads folder needs to be writable.** On Pantheon that is `files/`. Nothing is
@@ -133,8 +150,10 @@ quicker: a run reads roughly 20 seconds' worth of posts on each site before movi
   the ones this hits.
 - **Links are switched on the whole page**, menus and widgets included, as it is sent to the
   browser. Clear the page cache after a PDF is tagged to see it straight away.
-- The tagged copy is written to the uploads folder next to the original. Plugins that move uploads
-  to external storage (S3 and similar) are not supported.
+- The tagged version is written over the PDF in the uploads folder, with the original kept beside
+  it. Plugins that move uploads to external storage (S3 and similar) are not supported.
+- **Replaced a tagged PDF's file** with a media-replace plugin? Send it to Iris for tagging again.
+  Its new file is untagged, and the plugin does not notice until then.
 
 ## What is in this repo
 

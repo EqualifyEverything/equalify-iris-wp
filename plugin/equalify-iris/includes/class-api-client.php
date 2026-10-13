@@ -519,7 +519,7 @@ class Equalify_Iris_API_Client {
 		);
 	}
 
-	/** The most bytes a tagged copy of a PDF this size may have. */
+	/** The most bytes the tagged version of a PDF this size may have. */
 	private static function most_tagged_bytes( int $original ): int {
 		$original = $original > 0 ? min( $original, Equalify_Iris_Settings::MAX_FILE_BYTES ) : Equalify_Iris_Settings::MAX_FILE_BYTES;
 

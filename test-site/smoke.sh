@@ -7,7 +7,12 @@
 #   - A PDF linked only from a draft page is refused.
 #   - A PDF linked from a published page is queued, uploaded, tagged and saved
 #     within a few runs of the job.
-#   - Logged out, the page links to the tagged copy, and the tagged copy is a PDF.
+#   - Logged out, the page links to the tagged version, and it is a PDF.
+#   - The PDF's own address, with no `?v=`, serves the tagged version, and the
+#     original is kept beside it.
+#   - Deleting the tagged version puts the original back at that address.
+#   - A tagged copy saved beside the original, as 0.2.x did, is moved into place
+#     by the next run.
 #   - The plugin wrote nothing to debug.log while it did all that.
 #
 # WHAT IT LEAVES BEHIND
@@ -47,6 +52,35 @@ fail() {
 
 wpq() {
 	ddev wp "$@" 2>&1 | tr -d '\r'
+}
+
+# The MD5 of what a URL serves, as a visitor gets it.
+served_md5() {
+	curl -sk "$1" | openssl md5 | awk '{print $NF}'
+}
+
+# Run the job until the PDF is tagged. A site with a PDF at Iris is next due in
+# two minutes; waking it stands in for the wait.
+run_until_tagged() {
+	status=""
+	for i in $(seq 1 "$RUNS"); do
+		[ "$i" -gt 1 ] && wpq eval 'Equalify_Iris_Runner::wake();' >/dev/null
+		wpq equalify-iris run | sed 's/^/      /'
+		status="$(wpq eval "echo Equalify_Iris_Tagger::status( ${pdf} );" | tail -1)"
+		[ "$status" = "tagged" ] && break
+		[ "$status" = "failed" ] && break
+	done
+
+	if [ "$status" != "tagged" ]; then
+		error="$(wpq eval "echo Equalify_Iris_Tagger::error( ${pdf} );" | tail -1)"
+		fail "After ${RUNS} runs the PDF is '${status}'. ${error}"
+	fi
+	ok "tagged after ${i} runs"
+}
+
+# The kept original's full path, or nothing.
+kept_path() {
+	wpq eval "\$f = get_post_meta( ${pdf}, '_equalify_iris_original', true ); echo \$f ? wp_get_upload_dir()['basedir'] . '/' . \$f : '';" | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -122,23 +156,10 @@ fi
 ok "the PDF on a draft page is refused"
 
 # ---------------------------------------------------------------------------
-# Run the job until it is tagged. A site with a PDF at Iris is next due in two
-# minutes; waking it stands in for the wait.
+# Run the job until it is tagged.
 
-status=""
-for i in $(seq 1 "$RUNS"); do
-	[ "$i" -gt 1 ] && wpq eval 'Equalify_Iris_Runner::wake();' >/dev/null
-	wpq equalify-iris run | sed 's/^/      /'
-	status="$(wpq eval "echo Equalify_Iris_Tagger::status( ${pdf} );" | tail -1)"
-	[ "$status" = "tagged" ] && break
-	[ "$status" = "failed" ] && break
-done
-
-if [ "$status" != "tagged" ]; then
-	error="$(wpq eval "echo Equalify_Iris_Tagger::error( ${pdf} );" | tail -1)"
-	fail "After ${RUNS} runs the PDF is '${status}'. ${error}"
-fi
-ok "tagged after ${i} runs"
+original_md5="$(served_md5 "$pdf_url")"
+run_until_tagged
 
 # ---------------------------------------------------------------------------
 # What a visitor sees.
@@ -159,6 +180,60 @@ head="$(head -c 5 "${TMPDIR:-/tmp}/smoke-tagged.pdf" 2>/dev/null || true)"
 rm -f "${TMPDIR:-/tmp}/smoke-tagged.pdf"
 [ "$head" = "%PDF-" ] || fail "The tagged copy is not served as a PDF (${tagged_url})."
 ok "the tagged copy is a PDF"
+
+# ---------------------------------------------------------------------------
+# The PDF's own address. Old links, bookmarks and search results never reach
+# WordPress, so the file there has to be the tagged version itself.
+
+tagged_md5="$(wpq eval "echo get_post_meta( ${pdf}, '_equalify_iris_hash', true );" | tail -1)"
+[ "$(served_md5 "$pdf_url")" = "$tagged_md5" ] || fail "The PDF's own address (${pdf_url}) does not serve the tagged version."
+[ "$tagged_md5" != "$original_md5" ] || fail "The tagged version is the same file as the original."
+kept="$(kept_path)"
+[ -n "$kept" ] && [ "$(wpq eval "echo md5_file( '${kept}' );" | tail -1)" = "$original_md5" ] \
+	|| fail "The original was not kept beside the tagged version (${kept:-nothing recorded})."
+ok "the PDF's own address serves the tagged version, and the original is kept"
+
+# ---------------------------------------------------------------------------
+# Deleting the tagged version puts the original back.
+
+out="$(wpq equalify-iris remove "$pdf" || true)"
+grep -qF "back at its address" <<<"$out" || fail "Deleting the tagged version failed: ${out}"
+[ "$(served_md5 "$pdf_url")" = "$original_md5" ] || fail "After deleting the tagged version, ${pdf_url} does not serve the original."
+[ "$(wpq eval "echo file_exists( '${kept}' ) ? 'yes' : 'no';" | tail -1)" = "no" ] || fail "The kept original is still there after being put back."
+ok "deleting the tagged version puts the original back at its address"
+
+# ---------------------------------------------------------------------------
+# A PDF tagged by 0.2.x: its tagged copy is `name-accessible.pdf`, beside the
+# untouched original. Tag it again, then put it back the way 0.2.x left it.
+
+out="$(wpq equalify-iris tag "$pdf" || true)"
+grep -qF "Queued ${pdf}." <<<"$out" || fail "The PDF could not be queued again: ${out}"
+run_until_tagged
+
+wpq eval "
+	\$id   = ${pdf};
+	\$path = get_attached_file( \$id );
+	\$file = get_post_meta( \$id, '_wp_attached_file', true );
+	\$old  = dirname( \$path ) . '/' . pathinfo( \$path, PATHINFO_FILENAME ) . '-accessible.pdf';
+	rename( \$path, \$old );
+	rename( wp_get_upload_dir()['basedir'] . '/' . get_post_meta( \$id, '_equalify_iris_original', true ), \$path );
+	\$rel = ( '.' === dirname( \$file ) ? '' : dirname( \$file ) . '/' ) . basename( \$old );
+	update_post_meta( \$id, '_equalify_iris_file', \$rel );
+	delete_post_meta( \$id, '_equalify_iris_original' );
+	delete_post_meta( \$id, '_equalify_iris_hash' );
+	\$map = Equalify_Iris_Settings::link_map();
+	\$map[ \$file ] = \$rel . '?v=1';
+	Equalify_Iris_Settings::set_link_map( \$map );
+" >/dev/null
+[ "$(served_md5 "$pdf_url")" = "$original_md5" ] || fail "Could not put the PDF back the way 0.2.x left it."
+
+wpq eval 'Equalify_Iris_Runner::wake();' >/dev/null
+wpq equalify-iris run | sed 's/^/      /'
+[ -z "$(wpq eval "echo get_post_meta( ${pdf}, '_equalify_iris_file', true );" | tail -1)" ] || fail "The run did not move the 0.2.x copy into place."
+[ "$(served_md5 "$pdf_url")" = "$(wpq eval "echo get_post_meta( ${pdf}, '_equalify_iris_hash', true );" | tail -1)" ] \
+	|| fail "After moving the 0.2.x copy, ${pdf_url} does not serve the tagged version."
+[ "$(wpq eval "echo md5_file( '$(kept_path)' );" | tail -1)" = "$original_md5" ] || fail "After moving the 0.2.x copy, the original was not kept."
+ok "a 0.2.x tagged copy is moved to the PDF's own address"
 
 # ---------------------------------------------------------------------------
 # Nothing the plugin said in debug.log.

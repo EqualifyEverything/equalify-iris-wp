@@ -5,9 +5,12 @@
  * What happens when the plugin is deleted, not just deactivated. WordPress runs it
  * without loading the rest of the plugin, so names are repeated here.
  *
- * DELETED: the tagged copies, their post meta, every setting on every site, and
- * the job. Links already went back to the original PDFs when the plugin stopped
- * running; the original files are never touched.
+ * PUT BACK: each original PDF, at its own address, in place of its tagged
+ * version. Unless something else replaced the file since it was tagged: then
+ * that file stays, and the kept original is deleted.
+ *
+ * DELETED: 0.2.x's separate tagged copies, our post meta, every setting on every
+ * site, and the job.
  *
  * ON A LARGE NETWORK
  *
@@ -28,22 +31,56 @@ global $wpdb;
  * @param string $basedir The site's uploads folder.
  */
 $equalify_iris_clean_site = static function ( string $prefix, string $basedir ) use ( $wpdb ) {
-	// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-	$files = $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$prefix}postmeta WHERE meta_key = %s", '_equalify_iris_file' ) );
+	$base = (string) realpath( $basedir );
 
-	// Only files that look like ours, inside this site's uploads folder: the
-	// same test as Equalify_Iris_Tagger::tagged_path(), which is not loaded here.
-	$base = realpath( $basedir );
-
-	foreach ( $files as $file ) {
-		if ( ! $base || false !== strpos( $file, "\0" ) || ! preg_match( '#^(?:[^/\\\\]+/)*[^/\\\\]+-accessible(?:-\d+)?\.pdf$#', $file ) ) {
-			continue;
+	// The full path of a file inside this site's uploads folder, or ''. Ours must
+	// also be named like ours: the same test as Equalify_Iris_Tagger::stored_path(),
+	// which is not loaded here.
+	$inside = static function ( string $file, bool $ours ) use ( $base ): string {
+		if ( '' === $base || '' === $file || false !== strpos( $file, "\0" ) || ( $ours && ! preg_match( '#^(?:[^/\\\\]+/)*[^/\\\\]+-(?:iris-original|accessible)(?:-\d+)?\.pdf$#', $file ) ) ) {
+			return '';
 		}
 
 		$dir = realpath( dirname( $base . '/' . $file ) );
 
-		if ( $dir && ( $dir === $base || str_starts_with( $dir, $base . DIRECTORY_SEPARATOR ) ) ) {
-			wp_delete_file( $dir . '/' . basename( $file ) );
+		return $dir && ( $dir === $base || str_starts_with( $dir, $base . DIRECTORY_SEPARATOR ) ) ? $dir . '/' . basename( $file ) : '';
+	};
+
+	// phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$kept = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT o.meta_value AS original, h.meta_value AS hash, f.meta_value AS file FROM {$prefix}postmeta o
+			LEFT JOIN {$prefix}postmeta h ON h.post_id = o.post_id AND h.meta_key = %s
+			LEFT JOIN {$prefix}postmeta f ON f.post_id = o.post_id AND f.meta_key = %s
+			WHERE o.meta_key = %s",
+			'_equalify_iris_hash',
+			'_wp_attached_file',
+			'_equalify_iris_original'
+		)
+	);
+
+	foreach ( $kept as $row ) {
+		$original = $inside( (string) $row->original, true );
+		$path     = $inside( (string) $row->file, false );
+
+		if ( '' === $original || ! is_file( $original ) ) {
+			continue;
+		}
+
+		// Unless something else replaced the tagged version since. A file that is
+		// gone altogether is better off with its original back.
+		if ( '' !== $path && ( ! is_file( $path ) || md5_file( $path ) === (string) $row->hash ) ) {
+			rename( $original, $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		} else {
+			wp_delete_file( $original );
+		}
+	}
+
+	foreach ( $wpdb->get_col( $wpdb->prepare( "SELECT meta_value FROM {$prefix}postmeta WHERE meta_key = %s", '_equalify_iris_file' ) ) as $file ) {
+		$old = $inside( (string) $file, true );
+
+		if ( '' !== $old ) {
+			wp_delete_file( $old );
 		}
 	}
 
