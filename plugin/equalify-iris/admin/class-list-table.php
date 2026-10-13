@@ -242,7 +242,7 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 		switch ( Equalify_Iris_Tagger::status( $attachment_id ) ) {
 			case Equalify_Iris_Tagger::TAGGED:
 				if ( get_post_meta( $attachment_id, Equalify_Iris_Tagger::META_FILE, true ) ) {
-					return array( __( 'Links on this site open the Iris-tagged version. In the next few minutes, it moves to the PDF’s own address, so links from anywhere else open it too.', 'equalify-iris' ) );
+					return array( __( 'Links on this site open the Iris-tagged version. The background job is moving it to the PDF’s own address, so links from anywhere else open it too.', 'equalify-iris' ) );
 				}
 
 				return array( __( 'The PDF’s address opens the Iris-tagged version, so every link to it does.', 'equalify-iris' ) );

@@ -85,12 +85,11 @@ is.
 
 1. **Is it tagged?** On the Equalify Iris screen it says "Tagged", and the media library's
    Equalify Iris column says "Tagged by Equalify Iris".
-2. **Was it tagged by 0.2?** Its details say it moves to the PDF's own address in the next few
-   minutes. The background job moves ten per site per run. If the uploads folder could not be
-   written, it waits an hour and tries again.
+2. **Was it tagged by 0.2?** Its details say the background job is moving it to the PDF's own
+   address. It moves ten per site per run, when the site's turn comes. If the uploads folder could
+   not be written, it waits an hour and tries again.
 3. **Is a CDN or browser caching the PDF?** Open it with `?x=1` on the end. If that is tagged, the
-   plain address is cached. Pantheon's CDN is cleared for you when Pantheon Advanced Page Cache is
-   active. Elsewhere, purge the CDN, or wait for it to expire. Links on your own pages carry `?v=`,
+   plain address is cached. Pantheon's CDN is cleared for you. Elsewhere, purge the CDN, or wait for it to expire. Links on your own pages carry `?v=`,
    so they are not affected.
 4. **Was the file replaced?** A media-replace plugin, or an upload over the same file, puts an
    untagged file at the address. Send it to Iris for tagging again.
@@ -131,8 +130,8 @@ say) keeps it showing until it is replaced or unlinked.
 ## Starting over
 
 - **Delete one tagged version:** **Delete Iris-Tagged Version**. The original goes back at its
-  address. If the screen says the original could not be found, nothing changed; the tagged version
-  stays.
+  address. If the screen says the original could not be put back, nothing changed; the tagged version
+  stays. If it says the file had been replaced since it was tagged, that new file stays.
 - **Stop everything:** deactivate the plugin. Nothing goes back: tagged PDFs stay at their
   addresses, and the originals stay beside them as `name-iris-original.pdf`. Reactivating carries
   on. To put the originals back, delete their tagged versions first, or delete the plugin.

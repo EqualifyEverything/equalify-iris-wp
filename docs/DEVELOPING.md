@@ -147,6 +147,7 @@ Match the code that is there:
 | `get_error_data()` returning null | `$error->get_error_data()['status']` warns. Use `Equalify_Iris_API_Client::status()`. |
 | Making the kept original an attachment | It would show up in the media library as a second PDF. It is a plain file on purpose. |
 | Moving the original away before writing the tagged version | For a moment the PDF's address has nothing at it, and if PHP dies there, nothing for good. Copy the original, then rename the tagged version over it. |
+| Calling `rename()` on an upload | Pantheon's file system does not rename files. Use `Tagger::replace()`, which copies and checks where a rename fails. |
 | Uploading `get_attached_file()` | Once tagged, that is the tagged version. Send `source()`, the kept original. |
 | Putting the original back without checking `is_ours()` | The file may have been replaced since it was tagged. Overwriting it would throw away someone's upload. |
 | A path from post meta, unchecked | Run it through `stored_path()`, which insists on our suffix and the uploads folder, before renaming or deleting it. |

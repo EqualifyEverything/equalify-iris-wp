@@ -21,7 +21,8 @@ What that means:
 - **Deleting a PDF** from the media library deletes its kept original too.
 - **Deleting the plugin** puts every original back where the tagged version is still there.
 - **PDFs tagged by version 0.2**, saved beside the original as `name-accessible.pdf`, are moved to
-  the PDF's own address by the background job, ten per site per run.
+  the PDF's own address by the background job, ten per site per run. If the original's file is
+  gone, the copy takes its place; if the copy is gone, the PDF is sent to Iris again.
 
 **Only public PDFs are touched.** A PDF counts as public when something visitors can see links to
 it:
@@ -119,13 +120,13 @@ These hold on any host. Pantheon is the example because it has all of them.
   `wp equalify-iris resume`. Otherwise the copy would collect, and close, the PDFs live had at
   Iris. Moving the live site to a new domain pauses it the same way, and the same button resumes it.
 - **CDNs.** Links on your pages carry `?v=` and the time the PDF was saved, so they never get a
-  cached copy. On Pantheon, the PDF's own address is cleared from the CDN too, with Pantheon
-  Advanced Page Cache. Elsewhere, a CDN that cached the PDF serves the old file at its plain address
+  cached copy. On Pantheon, the PDF's own address is cleared from the CDN too. Elsewhere, a CDN that cached the PDF serves the old file at its plain address
   until it expires; purge it, or hook `equalify_iris_links_changed`.
 - **Locked environments.** Behind HTTP authentication (Pantheon's Lock Environment, or basic auth
   anywhere), WordPress cannot reach its own `wp-cron.php`. Use the scheduler above there.
 - **Only the uploads folder needs to be writable.** On Pantheon that is `files/`. Nothing is
-  written to `/tmp`, which Pantheon's app servers do not share.
+  written to `/tmp`, which Pantheon's app servers do not share. Pantheon's file system does not
+  rename files, so there the tagged version is copied into place instead, and checked.
 - **An Iris deployment that only accepts known IP addresses** needs your host's outgoing address,
   and Pantheon's is not fixed without Secure Integration.
 

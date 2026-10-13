@@ -144,7 +144,8 @@ class Equalify_Iris_Admin {
 			'queued'     => array( 'success', __( 'Equalify Iris will add accessibility tags to this PDF. It usually takes a few minutes; once it is ready, the PDF’s address opens the tagged version.', 'equalify-iris' ) ),
 			'queued-all' => array( 'success', __( 'Equalify Iris will add accessibility tags to these PDFs. It usually takes a few minutes each.', 'equalify-iris' ) ),
 			'removed'    => array( 'success', __( 'The Iris-tagged version was deleted, and the original PDF is back at its address.', 'equalify-iris' ) ),
-			'kept'       => array( 'error', __( 'An original PDF could not be found, so its Iris-tagged version stays at its address. Nothing else about it changed.', 'equalify-iris' ) ),
+			'replaced'   => array( 'success', __( 'The Iris-tagged version was deleted. A PDF’s file had been replaced since it was tagged, so that new file stays at its address, and the original from before was deleted.', 'equalify-iris' ) ),
+			'kept'       => array( 'error', __( 'An original PDF could not be put back at its address, because it is missing or the uploads folder could not be written. Nothing about it changed.', 'equalify-iris' ) ),
 			'reading'    => array( 'success', __( 'Equalify Iris will look for PDFs on this site in the next few minutes.', 'equalify-iris' ) ),
 			'resumed'    => array( 'success', __( 'Equalify Iris runs here from now on. PDFs the original site had at Iris are sent again from here.', 'equalify-iris' ) ),
 			'not-public' => array( 'error', __( 'Only PDFs that visitors can reach from this site’s published content can be sent to Iris.', 'equalify-iris' ) ),
@@ -458,9 +459,9 @@ class Equalify_Iris_Admin {
 	public static function handle_remove(): void {
 		$attachment_id = self::verify( 'equalify_iris_remove' );
 
-		$removed = ! Equalify_Iris_Tagger::is_pdf( $attachment_id ) || Equalify_Iris_Tagger::remove( $attachment_id );
+		$done = Equalify_Iris_Tagger::is_pdf( $attachment_id ) ? Equalify_Iris_Tagger::remove( $attachment_id ) : Equalify_Iris_Tagger::RESTORED;
 
-		self::redirect( self::back(), $removed ? 'removed' : 'kept' );
+		self::redirect( self::back(), self::removed_notice( array( $done ) ) );
 	}
 
 	public static function handle_tag_all(): void {
@@ -484,18 +485,27 @@ class Equalify_Iris_Admin {
 		self::require_cap( 'manage_options' );
 		check_admin_referer( 'bulk-pdfs' );
 
-		$ids    = isset( $_REQUEST['attachment'] ) ? array_map( 'absint', (array) wp_unslash( $_REQUEST['attachment'] ) ) : array();
-		$notice = 'equalify_iris_tag' === $action ? 'queued-all' : 'removed';
+		$ids  = isset( $_REQUEST['attachment'] ) ? array_map( 'absint', (array) wp_unslash( $_REQUEST['attachment'] ) ) : array();
+		$done = array();
 
 		foreach ( $ids as $id ) {
 			if ( 'equalify_iris_tag' === $action ) {
 				Equalify_Iris_Tagger::queue( $id );
-			} elseif ( Equalify_Iris_Tagger::is_pdf( $id ) && ! Equalify_Iris_Tagger::remove( $id ) ) {
-				$notice = 'kept';
+			} elseif ( Equalify_Iris_Tagger::is_pdf( $id ) ) {
+				$done[] = Equalify_Iris_Tagger::remove( $id );
 			}
 		}
 
-		self::redirect( self::back(), $notice );
+		self::redirect( self::back(), 'equalify_iris_tag' === $action ? 'queued-all' : self::removed_notice( $done ) );
+	}
+
+	/** The notice for what remove() did, the worst of them first. */
+	private static function removed_notice( array $done ): string {
+		if ( in_array( '', $done, true ) ) {
+			return 'kept';
+		}
+
+		return in_array( Equalify_Iris_Tagger::REPLACED, $done, true ) ? 'replaced' : 'removed';
 	}
 
 	// -----------------------------------------------------------------------

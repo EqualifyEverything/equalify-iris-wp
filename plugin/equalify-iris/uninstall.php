@@ -70,7 +70,12 @@ $equalify_iris_clean_site = static function ( string $prefix, string $basedir ) 
 		// Unless something else replaced the tagged version since. A file that is
 		// gone altogether is better off with its original back.
 		if ( '' !== $path && ( ! is_file( $path ) || md5_file( $path ) === (string) $row->hash ) ) {
-			rename( $original, $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+			// Pantheon's file system does not rename files; copy it there instead,
+			// as Equalify_Iris_Tagger::replace() does. A copy that fails partway
+			// keeps the original, rather than deleting the only one there is.
+			if ( ! @rename( $original, $path ) && copy( $original, $path ) && filesize( $path ) === filesize( $original ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions
+				wp_delete_file( $original );
+			}
 		} else {
 			wp_delete_file( $original );
 		}

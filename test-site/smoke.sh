@@ -224,6 +224,7 @@ wpq eval "
 	\$map = Equalify_Iris_Settings::link_map();
 	\$map[ \$file ] = \$rel . '?v=1';
 	Equalify_Iris_Settings::set_link_map( \$map );
+	delete_option( Equalify_Iris_Tagger::MOVED );
 " >/dev/null
 [ "$(served_md5 "$pdf_url")" = "$original_md5" ] || fail "Could not put the PDF back the way 0.2.x left it."
 

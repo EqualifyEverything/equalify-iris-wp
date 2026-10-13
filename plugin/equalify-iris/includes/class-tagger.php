@@ -86,6 +86,13 @@ class Equalify_Iris_Tagger {
 	/** 0.2.x copies moved into place per run. */
 	const MOVE_BATCH = 10;
 
+	/** Option: this site has no 0.2.x copies left, so next_due() stops asking. */
+	const MOVED = 'equalify_iris_moved';
+
+	/** What remove() did. */
+	const RESTORED = 'restored';
+	const REPLACED = 'replaced';
+
 	/** PDFs at Iris at once, per site, so one site cannot take every slot. */
 	const MAX_WORKING = 2;
 
@@ -108,7 +115,8 @@ class Equalify_Iris_Tagger {
 	public static function next_due(): int {
 		$at = self::tagging_due();
 
-		if ( self::old_copies( 1 ) ) {
+		// Once a site has none, the option says so, and nothing is queried.
+		if ( ! get_option( self::MOVED ) && self::old_copies( 1 ) ) {
 			$move = max( time(), (int) get_option( self::MOVE_PAUSED, 0 ) );
 			$at   = $at ? min( $at, $move ) : $move;
 		}
@@ -269,9 +277,11 @@ class Equalify_Iris_Tagger {
 	 *
 	 * @param bool $remember Mark it `removed`, so automatic tagging leaves it alone.
 	 *                       False when the attachment itself is being deleted.
-	 * @return bool False when the original could not be put back, so nothing changed.
+	 * @return string RESTORED; REPLACED when the file had been replaced since it was
+	 *                tagged, so that file stays and the kept original is deleted; or
+	 *                '' when the original could not be put back, so nothing changed.
 	 */
-	public static function remove( int $attachment_id, bool $remember = true ): bool {
+	public static function remove( int $attachment_id, bool $remember = true ): string {
 		$had  = self::has_version( $attachment_id );
 		$kept = self::original_path( $attachment_id );
 		$path = (string) get_attached_file( $attachment_id );
@@ -280,16 +290,28 @@ class Equalify_Iris_Tagger {
 		// Without the original, the tagged version is the only copy there is, so
 		// it stays, and so does everything about it.
 		if ( $remember && $ours && '' === $kept ) {
-			return false;
+			return '';
 		}
 
+		$done = self::RESTORED;
+
 		if ( $remember && '' !== $kept && '' !== $path && ( $ours || ! is_file( $path ) ) ) {
-			if ( ! rename( $kept, $path ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
-				return false;
+			if ( ! self::replace( $kept, $path ) ) {
+				// A copy that stopped partway leaves a damaged file there. Remember
+				// it as ours, so trying again still puts the original back.
+				if ( $ours && is_file( $path ) ) {
+					update_post_meta( $attachment_id, self::META_HASH, (string) md5_file( $path ) );
+				}
+
+				return '';
 			}
 
 			self::set_filesize( $attachment_id );
 		} elseif ( '' !== $kept ) {
+			if ( $remember ) {
+				$done = self::REPLACED;
+			}
+
 			// The attachment is being deleted, and WordPress deletes its file; or
 			// something replaced the file since it was tagged, and that file stays.
 			wp_delete_file( $kept );
@@ -333,7 +355,7 @@ class Equalify_Iris_Tagger {
 			Equalify_Iris_Runner::sync_at_iris( self::ids( self::WORKING ) );
 		}
 
-		return true;
+		return $done;
 	}
 
 	/** @return int How many were queued. */
@@ -512,11 +534,37 @@ class Equalify_Iris_Tagger {
 	}
 
 	/**
-	 * Put the tagged version at the PDF's address, keeping the original beside it.
+	 * Put a newly tagged PDF at its address. It is written beside it first, then
+	 * put in place, so a full disk or a killed process never leaves half a file
+	 * at the PDF's address.
 	 *
 	 * @return true|WP_Error
 	 */
 	private static function save( int $id, string $pdf ) {
+		$path = (string) get_attached_file( $id );
+
+		if ( '' === $path || ! is_file( $path ) ) {
+			return new WP_Error( 'equalify_iris_file_missing', __( 'The original PDF is no longer on the server.', 'equalify-iris' ) );
+		}
+
+		$temp    = dirname( $path ) . '/.' . basename( $path ) . '.' . wp_generate_password( 8, false ) . '.tmp';
+		$written = file_put_contents( $temp, $pdf ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		$saved   = strlen( $pdf ) === $written ? self::put_in_place( $id, $temp ) : self::write_failed();
+
+		if ( true !== $saved ) {
+			wp_delete_file( $temp );
+		}
+
+		return $saved;
+	}
+
+	/**
+	 * Put a tagged file at the PDF's address, keeping the original beside it.
+	 * When it fails, $from is still where it was.
+	 *
+	 * @return true|WP_Error
+	 */
+	private static function put_in_place( int $id, string $from ) {
 		$file = (string) get_post_meta( $id, '_wp_attached_file', true );
 		$path = (string) get_attached_file( $id );
 
@@ -532,43 +580,43 @@ class Equalify_Iris_Tagger {
 			return new WP_Error( 'equalify_iris_changed', __( 'The PDF was replaced while Iris was tagging it.', 'equalify-iris' ) );
 		}
 
-		$dir   = dirname( $path );
-		$error = new WP_Error( 'equalify_iris_write_failed', __( 'The tagged PDF could not be saved in the uploads folder. Check that it is writable and has space.', 'equalify-iris' ) );
-
-		// Written beside it first, then moved into place in one step, so a full
-		// disk or a killed process never leaves half a file at the PDF's address,
-		// nor the address empty for a moment.
-		$temp    = $dir . '/.' . basename( $path ) . '.' . wp_generate_password( 8, false ) . '.tmp';
-		$written = file_put_contents( $temp, $pdf ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-
-		if ( strlen( $pdf ) !== $written ) {
-			wp_delete_file( $temp );
-			return $error;
-		}
-
+		$dir    = dirname( $path );
+		$folder = dirname( $file );
 		$copied = '';
 
+		// Copied, never moved away, so the address is never empty for a moment.
 		if ( '' === $kept ) {
 			$copied = $dir . '/' . wp_unique_filename( $dir, pathinfo( $path, PATHINFO_FILENAME ) . '-iris-original.pdf' );
 
 			if ( ! copy( $path, $copied ) || filesize( $copied ) !== filesize( $path ) ) {
-				wp_delete_file( $temp );
 				wp_delete_file( $copied );
-				return $error;
+				return self::write_failed();
 			}
 		}
 
-		if ( ! rename( $temp, $path ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
-			wp_delete_file( $temp );
+		if ( ! self::replace( $from, $path ) ) {
+			// A copy that stopped partway (see replace()) leaves a damaged file at
+			// the address. Put the original back over it. Failing that, keep the
+			// original on record, so deleting the tagged version, or the plugin,
+			// can put it back later.
+			$intact = '' !== $copied ? md5_file( $path ) === md5_file( $copied ) : self::is_ours( $id );
 
-			if ( '' !== $copied ) {
-				wp_delete_file( $copied );
+			if ( ! $intact ) {
+				copy( '' !== $copied ? $copied : $kept, $path );
 			}
 
-			return $error;
-		}
+			if ( '' !== $copied && md5_file( $path ) === md5_file( $copied ) ) {
+				wp_delete_file( $copied );
+			} elseif ( ! $intact ) {
+				if ( '' !== $copied ) {
+					update_post_meta( $id, self::META_ORIGINAL, ( '.' === $folder ? '' : $folder . '/' ) . basename( $copied ) );
+				}
 
-		$folder = dirname( $file );
+				update_post_meta( $id, self::META_HASH, (string) md5_file( $path ) );
+			}
+
+			return self::write_failed();
+		}
 
 		if ( '' !== $copied ) {
 			update_post_meta( $id, self::META_ORIGINAL, ( '.' === $folder ? '' : $folder . '/' ) . basename( $copied ) );
@@ -579,7 +627,14 @@ class Equalify_Iris_Tagger {
 			}
 		}
 
-		update_post_meta( $id, self::META_HASH, md5( $pdf ) );
+		self::placed( $id, $file, $path );
+
+		return true;
+	}
+
+	/** What follows a tagged version arriving at the PDF's address. */
+	private static function placed( int $id, string $file, string $path ): void {
+		update_post_meta( $id, self::META_HASH, (string) md5_file( $path ) );
 		delete_post_meta( $id, self::META_SENT );
 
 		$old = self::stored_path( (string) get_post_meta( $id, self::META_FILE, true ) );
@@ -598,6 +653,38 @@ class Equalify_Iris_Tagger {
 
 		self::set_filesize( $id );
 		self::links_changed( $id );
+	}
+
+	private static function write_failed(): WP_Error {
+		return new WP_Error( 'equalify_iris_write_failed', __( 'The tagged PDF could not be saved in the uploads folder. Check that it is writable and has space.', 'equalify-iris' ) );
+	}
+
+	/**
+	 * Put $from at $to, in place of whatever is there. A rename does that in one
+	 * step. Pantheon's file system does not rename files, so there it is copied
+	 * over, checked, and $from deleted. Either way, $from is only gone when this
+	 * returns true.
+	 */
+	private static function replace( string $from, string $to ): bool {
+		// Silenced: where renames are refused, the copy below is the usual way,
+		// not something to log on every save.
+		if ( @rename( $from, $to ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions
+			return true;
+		}
+
+		$size = filesize( $from );
+
+		if ( false === $size || ! copy( $from, $to ) ) {
+			return false;
+		}
+
+		clearstatcache( true, $to );
+
+		if ( filesize( $to ) !== $size ) {
+			return false;
+		}
+
+		wp_delete_file( $from );
 
 		return true;
 	}
@@ -665,36 +752,73 @@ class Equalify_Iris_Tagger {
 	 * exactly as a newly tagged PDF would be, so old links get them too.
 	 */
 	private static function move_old_copies( int $deadline ): void {
-		if ( (int) get_option( self::MOVE_PAUSED, 0 ) > time() ) {
+		if ( get_option( self::MOVED ) || (int) get_option( self::MOVE_PAUSED, 0 ) > time() ) {
 			return;
 		}
 
-		foreach ( self::old_copies( self::MOVE_BATCH ) as $id ) {
-			if ( $deadline - time() < 15 ) {
+		$ids = self::old_copies( self::MOVE_BATCH );
+
+		foreach ( $ids as $id ) {
+			$old  = self::stored_path( (string) get_post_meta( $id, self::META_FILE, true ) );
+			$size = '' !== $old && is_file( $old ) ? (int) filesize( $old ) : 0;
+
+			// Where it has to be copied (see replace()), allow a slow volume a
+			// second a megabyte.
+			if ( $deadline - time() < 15 + intdiv( $size, MB_IN_BYTES ) ) {
 				return;
 			}
 
-			$old   = self::stored_path( (string) get_post_meta( $id, self::META_FILE, true ) );
-			$pdf   = '' !== $old && is_file( $old ) ? file_get_contents( $old ) : false; // phpcs:ignore WordPress.WP.AlternativeFunctions
-			$saved = false === $pdf ? null : self::save( $id, $pdf );
+			$file  = (string) get_post_meta( $id, '_wp_attached_file', true );
+			$path  = (string) get_attached_file( $id );
+			$moved = true;
 
-			if ( true === $saved ) {
-				continue;
+			if ( 0 === $size || '' === $file ) {
+				// The copy is gone, so the PDF has no tagged version. Ask for one.
+				self::forget_old_copy( $id );
+			} elseif ( '' === $path || ! is_file( $path ) ) {
+				// The original is gone, and the copy is the only version there is.
+				// It takes the original's place, with nothing to put back.
+				$moved = self::replace( $old, $path );
+
+				if ( $moved ) {
+					delete_post_meta( $id, self::META_FILE );
+					self::placed( $id, $file, $path );
+				}
+			} else {
+				$moved = true === self::put_in_place( $id, $old );
 			}
 
 			// A full or read-only disk fails every PDF alike. The copy stays, and
 			// its links still point at it, until an hour has passed.
-			if ( is_wp_error( $saved ) && 'equalify_iris_write_failed' === $saved->get_error_code() ) {
+			if ( ! $moved ) {
 				update_option( self::MOVE_PAUSED, time() + HOUR_IN_SECONDS, false );
 				return;
 			}
-
-			// The copy or the original is gone, or the PDF was replaced. Forget the
-			// copy, so the PDF is asked about again like any other.
-			self::remove( $id, false );
 		}
 
 		delete_option( self::MOVE_PAUSED );
+
+		if ( count( $ids ) < self::MOVE_BATCH ) {
+			update_option( self::MOVED, 1 );
+		}
+	}
+
+	/** A 0.2.x copy that is gone: drop its link, and send the PDF to Iris again. */
+	private static function forget_old_copy( int $id ): void {
+		$file = (string) get_post_meta( $id, '_wp_attached_file', true );
+		$map  = Equalify_Iris_Settings::link_map();
+
+		if ( isset( $map[ $file ] ) ) {
+			unset( $map[ $file ] );
+			Equalify_Iris_Settings::set_link_map( $map );
+		}
+
+		delete_post_meta( $id, self::META_FILE );
+		self::links_changed( $id );
+
+		if ( ! self::queue( $id ) ) {
+			self::set_status( $id, '' );
+		}
 	}
 
 	/**
@@ -706,9 +830,18 @@ class Equalify_Iris_Tagger {
 	 */
 	private static function links_changed( int $attachment_id ): void {
 		// Pantheon's CDN keeps files from the uploads folder too, and this one's
-		// contents just changed. Elsewhere, the action below is for the same job.
+		// contents just changed. The platform has pantheon_clear_edge_paths()
+		// whether or not Pantheon Advanced Page Cache is installed, which wraps it.
+		// Elsewhere, the action below is for the same job.
 		if ( function_exists( 'pantheon_wp_clear_edge_paths' ) ) {
-			pantheon_wp_clear_edge_paths( array( (string) wp_parse_url( (string) wp_get_attachment_url( $attachment_id ), PHP_URL_PATH ) ) );
+			pantheon_wp_clear_edge_paths( self::edge_paths( $attachment_id ) );
+		} elseif ( function_exists( 'pantheon_clear_edge_paths' ) ) {
+			try {
+				pantheon_clear_edge_paths( self::edge_paths( $attachment_id ) );
+			} catch ( Throwable $e ) {
+				// The CDN keeps the old file until it expires; the PDF is saved either way.
+				unset( $e );
+			}
 		}
 
 		$posts = get_post_meta( $attachment_id, Equalify_Iris_Discovery::META );
@@ -725,6 +858,22 @@ class Equalify_Iris_Tagger {
 		 * @param int $attachment_id The PDF.
 		 */
 		do_action( 'equalify_iris_links_changed', $attachment_id );
+	}
+
+	/**
+	 * The paths a visitor can reach the PDF at. The job runs from the main site,
+	 * where a subdirectory site's uploads are /wp-content/uploads/sites/3; its own
+	 * pages use /library/wp-content/uploads/sites/3. Both serve the file.
+	 */
+	private static function edge_paths( int $attachment_id ): array {
+		$path = (string) wp_parse_url( (string) wp_get_attachment_url( $attachment_id ), PHP_URL_PATH );
+		$site = is_multisite() ? untrailingslashit( (string) get_site()->path ) : '';
+
+		if ( '' !== $site && str_starts_with( $path, $site . '/' ) ) {
+			$path = substr( $path, strlen( $site ) );
+		}
+
+		return array_values( array_unique( array( $path, $site . $path ) ) );
 	}
 
 	private static function upload_queued( array &$done, int $deadline ): void {

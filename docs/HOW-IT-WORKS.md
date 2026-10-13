@@ -109,7 +109,10 @@ Each site's turn, switched to it:
    saved over the PDF (see [Saving the tagged version](#saving-the-tagged-version)), added to the
    link map, and the session closed.
 6. **Moves old copies.** Up to ten PDFs tagged by 0.2.x, whose tagged copy is still
-   `name-accessible.pdf` beside the original, are moved to the PDF's own address the same way.
+   `name-accessible.pdf` beside the original, are moved to the PDF's own address the same way,
+   without reading them into memory. If the original's file is gone, the copy takes its place,
+   with no original to put back. If the copy is gone, its link is dropped and the PDF queued
+   again. Once a site has none left, `equalify_iris_moved` says so, and nothing is queried again.
 
 Then the site's due time is set: now if it has more to read or queue; in a minute if it has queued
 PDFs (five while the network has no room at Iris); in two if it has PDFs at Iris; otherwise the row
@@ -163,7 +166,8 @@ A failed PDF stays failed until someone chooses **Send to Iris for Tagging** aga
 **Per site** (options): `equalify_iris_auto_tag` (the site's switch), `equalify_iris_map` (file →
 the same file with `?v=` and when its tagged version was saved, both relative to uploads; 0.2.x
 entries point at `-accessible.pdf` until moved), `equalify_iris_move_paused` (moving old copies
-failed to write, so it waits an hour), `equalify_iris_indexed` (how far through the content
+failed to write, so it waits an hour), `equalify_iris_moved` (it has no 0.2.x copies left),
+`equalify_iris_indexed` (how far through the content
 it has read), `equalify_iris_places_stale`, `equalify_iris_profile` (its public types, taxonomies
 and sidebars), and `equalify_iris_scanned` (see below).
 
@@ -195,15 +199,18 @@ The file at the PDF's address is never missing or half-written, even if PHP is k
    PDF queued again.
 3. The tagged PDF is written to a temporary file beside the original.
 4. The first time, the original is **copied** to `name-iris-original.pdf`, never moved away.
-5. The temporary file is renamed over the original, which replaces it in one step.
+5. The temporary file is renamed over the original, which replaces it in one step. Pantheon's
+   file system does not rename files, so where a rename fails it is copied over instead, its size
+   checked, and the temporary file deleted. If that copy stops partway, the original is copied
+   back; failing that, it stays on record, so deleting the tagged version can try again.
 6. `_equalify_iris_hash` records the tagged file's MD5, the attachment's `filesize` is updated,
    and the link map gets the new `?v=`.
 
 Tagging it again sends the kept original to Iris, not the tagged version. Deleting the tagged
-version renames the kept original back over the address, but only if the file there still matches
+version puts the kept original back over the address the same way, but only if the file there still matches
 `_equalify_iris_hash`, or is gone. If it does not match, someone put a new file there; it stays,
-and the kept original is deleted. If the kept original is missing, nothing changes and the screen
-says so.
+and the kept original is deleted, and the screen says that too. If the kept original is missing,
+or cannot be written, nothing changes and the screen says so.
 
 ## Swapping the links
 
@@ -223,7 +230,9 @@ sent as it was.
 
 When a tagged version is saved or deleted, the posts that link to it are cleaned from the cache
 (`clean_post_cache()`, which page-cache plugins also purge on). On Pantheon, the PDF's own address
-is purged from the CDN with `pantheon_wp_clear_edge_paths()`. `equalify_iris_links_changed` fires
+is purged from the CDN with `pantheon_clear_edge_paths()`, which the platform provides (through
+Pantheon Advanced Page Cache's wrapper when that is active). A subdirectory site's uploads are
+reachable with and without the site's path, so both are purged. `equalify_iris_links_changed` fires
 with the attachment id for any other CDN or cache. Menus, widgets and archives showing the PDF are
 not purged: a page cache keeps serving their old links until it is cleared.
 
