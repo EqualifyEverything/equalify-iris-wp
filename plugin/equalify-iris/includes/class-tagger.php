@@ -293,7 +293,8 @@ class Equalify_Iris_Tagger {
 			return '';
 		}
 
-		$done = self::RESTORED;
+		// Something replaced the file since it was tagged. That file stays.
+		$done = $remember && ! $ours && is_file( $path ) && '' !== (string) get_post_meta( $attachment_id, self::META_HASH, true ) ? self::REPLACED : self::RESTORED;
 
 		if ( $remember && '' !== $kept && '' !== $path && ( $ours || ! is_file( $path ) ) ) {
 			if ( ! self::replace( $kept, $path ) ) {
@@ -308,10 +309,6 @@ class Equalify_Iris_Tagger {
 
 			self::set_filesize( $attachment_id );
 		} elseif ( '' !== $kept ) {
-			if ( $remember ) {
-				$done = self::REPLACED;
-			}
-
 			// The attachment is being deleted, and WordPress deletes its file; or
 			// something replaced the file since it was tagged, and that file stays.
 			wp_delete_file( $kept );
@@ -785,7 +782,14 @@ class Equalify_Iris_Tagger {
 					self::placed( $id, $file, $path );
 				}
 			} else {
-				$moved = true === self::put_in_place( $id, $old );
+				$saved = self::put_in_place( $id, $old );
+				$moved = true === $saved || 'equalify_iris_write_failed' !== $saved->get_error_code();
+
+				// The PDF was replaced since this copy was tagged, so the copy is of
+				// the old file. Only this PDF is affected; the rest keep moving.
+				if ( true !== $saved && $moved ) {
+					self::forget_old_copy( $id );
+				}
 			}
 
 			// A full or read-only disk fails every PDF alike. The copy stays, and
@@ -799,12 +803,21 @@ class Equalify_Iris_Tagger {
 		delete_option( self::MOVE_PAUSED );
 
 		if ( count( $ids ) < self::MOVE_BATCH ) {
-			update_option( self::MOVED, 1 );
+			update_option( self::MOVED, 1, false );
 		}
 	}
 
-	/** A 0.2.x copy that is gone: drop its link, and send the PDF to Iris again. */
+	/**
+	 * A 0.2.x copy that is gone, or is of a file since replaced: drop it and its
+	 * link, and send the PDF to Iris again.
+	 */
 	private static function forget_old_copy( int $id ): void {
+		$old = self::stored_path( (string) get_post_meta( $id, self::META_FILE, true ) );
+
+		if ( '' !== $old ) {
+			wp_delete_file( $old );
+		}
+
 		$file = (string) get_post_meta( $id, '_wp_attached_file', true );
 		$map  = Equalify_Iris_Settings::link_map();
 

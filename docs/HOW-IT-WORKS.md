@@ -111,8 +111,8 @@ Each site's turn, switched to it:
 6. **Moves old copies.** Up to ten PDFs tagged by 0.2.x, whose tagged copy is still
    `name-accessible.pdf` beside the original, are moved to the PDF's own address the same way,
    without reading them into memory. If the original's file is gone, the copy takes its place,
-   with no original to put back. If the copy is gone, its link is dropped and the PDF queued
-   again. Once a site has none left, `equalify_iris_moved` says so, and nothing is queried again.
+   with no original to put back. If the copy is gone, or the PDF was replaced since, the copy and
+   its link are dropped and the PDF queued again. Once a site has none left, `equalify_iris_moved` says so, and nothing is queried again.
 
 Then the site's due time is set: now if it has more to read or queue; in a minute if it has queued
 PDFs (five while the network has no room at Iris); in two if it has PDFs at Iris; otherwise the row
