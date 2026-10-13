@@ -309,6 +309,10 @@ class Equalify_Iris_Tagger {
 
 			self::set_filesize( $attachment_id );
 		} elseif ( '' !== $kept ) {
+			if ( $remember ) {
+				$done = self::REPLACED;
+			}
+
 			// The attachment is being deleted, and WordPress deletes its file; or
 			// something replaced the file since it was tagged, and that file stays.
 			wp_delete_file( $kept );
@@ -812,18 +816,19 @@ class Equalify_Iris_Tagger {
 	 * link, and send the PDF to Iris again.
 	 */
 	private static function forget_old_copy( int $id ): void {
+		$file = (string) get_post_meta( $id, '_wp_attached_file', true );
+		$map  = Equalify_Iris_Settings::link_map();
+
+		// The link first, so it never points at a file that is gone.
+		if ( isset( $map[ $file ] ) ) {
+			unset( $map[ $file ] );
+			Equalify_Iris_Settings::set_link_map( $map );
+		}
+
 		$old = self::stored_path( (string) get_post_meta( $id, self::META_FILE, true ) );
 
 		if ( '' !== $old ) {
 			wp_delete_file( $old );
-		}
-
-		$file = (string) get_post_meta( $id, '_wp_attached_file', true );
-		$map  = Equalify_Iris_Settings::link_map();
-
-		if ( isset( $map[ $file ] ) ) {
-			unset( $map[ $file ] );
-			Equalify_Iris_Settings::set_link_map( $map );
 		}
 
 		delete_post_meta( $id, self::META_FILE );
