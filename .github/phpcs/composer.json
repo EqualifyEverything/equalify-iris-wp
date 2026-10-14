@@ -1,0 +1,12 @@
+{
+    "description": "The PHP checks CI runs on the plugin. See .github/scripts/php-checks.sh.",
+    "require": {
+        "wp-coding-standards/wpcs": "3.4.1",
+        "phpcompatibility/phpcompatibility-wp": "2.1.8"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    }
+}

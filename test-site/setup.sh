@@ -64,6 +64,11 @@ note "DDEV $(ddev version | awk '/DDEV version/ {print $4}') and Docker are both
 # ---------------------------------------------------------------------------
 say "Starting the containers"
 
+# The plugin is mounted inside wp-content (.ddev/docker-compose.plugin.yaml). On Linux, Docker
+# creates a missing mount point as root, which leaves wp-content and uploads unwritable, so make
+# them first as you.
+mkdir -p wp/wp-content/plugins/equalify-iris wp/wp-content/uploads
+
 # -y so it never stops to ask. First run downloads a few hundred megabytes of
 # images and can take several minutes; later runs take seconds.
 ddev start -y
@@ -192,7 +197,13 @@ import_pdf() {
 	local url="$1" file="$2"
 
 	local id
-	id="$(ddev wp media import "${CONTAINER_SAMPLES}/${file}" --url="$url" --porcelain 2>/dev/null | tail -1 | tr -d '\r')"
+	id="$(ddev wp media import "${CONTAINER_SAMPLES}/${file}" --url="$url" --porcelain | tail -1 | tr -d '\r')"
+	case "$id" in
+		'' | *[!0-9]*)
+			echo "Could not add ${file} to ${url}. WordPress said: ${id:-nothing}" >&2
+			return 1
+			;;
+	esac
 
 	ddev wp eval "echo wp_get_attachment_url( ${id} );" --url="$url" 2>/dev/null | tail -1 | tr -d '\r'
 }
