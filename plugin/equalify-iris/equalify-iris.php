@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Equalify Iris
  * Plugin URI:        https://github.com/EqualifyEverything/equalify-iris-wp
- * Description:       Adds accessibility tags to the PDFs a site's visitors can reach with Equalify Iris, and puts the tagged version at each PDF's own address.
+ * Description:       Uses Equalify Iris to add accessibility tags to the PDFs a site's visitors can reach. Puts the tagged version at each PDF's own address.
  * Version:           0.3.0
  * Requires at least: 6.4
  * Requires PHP:      8.0
