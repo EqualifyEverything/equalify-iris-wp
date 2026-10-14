@@ -7,8 +7,9 @@
  *   Equalify_Iris_Discovery  which PDFs visitors can reach               (every site)
  *   Equalify_Iris_Tagger     one site's share of the background job       (every site)
  *   Equalify_Iris_Runner     the background job, for the whole network
- *   Equalify_Iris_Links      points PDF links at tagged copies            (front end)
+ *   Equalify_Iris_Links      gives PDF links a new address when tagged    (front end)
  *   Equalify_Iris_Admin      the Equalify Iris screens and the notice     (admin)
+ *   Equalify_Iris_Media      what the media library says about each PDF   (admin)
  *   Equalify_Iris_CLI        `wp equalify-iris`                           (WP-CLI)
  */
 
@@ -28,6 +29,7 @@ class Equalify_Iris_Plugin {
 
 		if ( is_admin() ) {
 			Equalify_Iris_Admin::init();
+			Equalify_Iris_Media::init();
 		}
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
@@ -47,15 +49,17 @@ class Equalify_Iris_Plugin {
 	 */
 	public static function on_activate(): void {
 		Equalify_Iris_Discovery::restart_everywhere();
-		Equalify_Iris_Runner::wake_all( ! Equalify_Iris_Settings::network_auto() );
+		Equalify_Iris_Runner::wake_all( Equalify_Iris_Settings::network_auto() ? '' : Equalify_Iris_Runner::AUTO );
 
 		self::on_main_site( array( 'Equalify_Iris_Runner', 'keep_scheduled' ) );
 	}
 
 	/**
-	 * Stop the job. Links go back to the originals by themselves, because nothing
-	 * swaps them while the plugin is off. Tagged copies stay on disk, so
-	 * reactivating picks up where it left off.
+	 * Stop the job, and nothing else. Tagged versions stay at their PDFs'
+	 * addresses, so visitors keep getting them, and the originals stay beside them,
+	 * so reactivating picks up where it left off. Putting every original back here
+	 * would make the PDFs inaccessible again, and could take hours on a large
+	 * network; deleting the tagged versions, or the plugin, does that.
 	 */
 	public static function on_deactivate(): void {
 		self::on_main_site(

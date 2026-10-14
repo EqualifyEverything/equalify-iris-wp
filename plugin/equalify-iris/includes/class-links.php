@@ -2,13 +2,18 @@
 /**
  * WHAT IS THIS FILE?
  *
- * Points every link to a PDF at its tagged copy, as the page is shown.
+ * Gives every link to a tagged PDF a new address, as the page is shown.
  *
- * WHY AT DISPLAY TIME?
+ * WHY?
  *
- * Because nothing is rewritten in the database. Content keeps linking to the
- * original PDF, so deactivating the plugin, or deleting a tagged copy, puts every
- * link back the way it was without touching a single post.
+ * The tagged version is at the PDF's own address (see Equalify_Iris_Tagger), so
+ * links work without this. But CDNs and browsers keep files from the uploads
+ * folder for days, and would go on sending the untagged one. `?v=` and when the
+ * tagged version was saved makes the link new to them.
+ *
+ * Nothing is rewritten in the database. Content keeps linking to the PDF as it
+ * always did, so deactivating the plugin leaves links as they were, still
+ * opening the tagged version, without touching a single post.
  *
  * WHAT IT CHANGES
  *
@@ -16,7 +21,7 @@
  * custom fields alike, however the theme prints them. `href` and `data`
  * attributes (the File block's inline preview uses `data`) whose URL is a file
  * in this site's uploads folder with an entry in the link map. Links to other
- * sites, and to PDFs with no tagged copy, are left exactly as they were. The map
+ * sites, and to PDFs with no tagged version, are left exactly as they were. The map
  * is one autoloaded option, so a page costs no extra queries.
  */
 
@@ -30,7 +35,7 @@ class Equalify_Iris_Links {
 		add_action( 'template_redirect', array( __CLASS__, 'start' ), 0 );
 	}
 
-	/** Buffer the page, if this site has any tagged PDFs to point at. */
+	/** Buffer the page, if this site has any tagged PDFs. */
 	public static function start(): void {
 		if ( Equalify_Iris_Settings::link_map() ) {
 			ob_start( array( __CLASS__, 'swap' ) );
@@ -116,11 +121,9 @@ class Equalify_Iris_Links {
 	}
 
 	/**
-	 * A tagged copy's address, from its entry in the link map.
-	 *
-	 * Tagging a PDF again keeps the file's name, and CDNs and browsers keep
-	 * files from the uploads folder for days. `?v=` with when it was saved gives
-	 * each copy an address of its own, so nobody is sent the one it replaced.
+	 * A tagged PDF's address, from its entry in the link map: its own, with `?v=`
+	 * and when the tagged version was saved, so nobody is sent the file it
+	 * replaced. Until 0.2.x copies are moved into place, the entry is the copy's.
 	 */
 	public static function url( string $base, string $entry ): string {
 		list( $file, $version ) = explode( '?v=', $entry, 2 ) + array( '', '' );

@@ -47,7 +47,7 @@ Iris, and would otherwise fetch and close them before live could.
 
 ## PDFs stay at "Being tagged"
 
-Iris takes a few minutes to convert a PDF, then has to build the tagged copy while the job waits for
+Iris takes a few minutes to convert a PDF, then has to build the tagged version while the job waits for
 it, which can take minutes more.
 
 - **"Equalify Iris took longer than the N seconds this server lets the job wait."** The job waits
@@ -78,19 +78,23 @@ The reason is shown on the Equalify Iris screen and by `status`.
 | Needs a shared API token | The deployment has a token set. Network Admin → Equalify Iris. |
 | Cannot tag PDFs | The deployment has tagged PDFs turned off. **Save and check the connection** says so. |
 
-## A link still opens the original PDF
+## A PDF's address still opens the original
 
-1. **Is it tagged?** On the Equalify Iris screen it says "Tagged" and **View Iris-Tagged Version**
-   works.
-2. **Is the page cached?** Clear the page cache. Check logged out; logged-in visitors usually skip
-   the cache. Tagged copies get a new `?v=` each time they are saved, so a CDN caching the PDF itself
-   is not the problem. The page linking to it is.
-3. **Is the page built by WordPress's front end?** The whole page is switched as it is sent, so
-   menus, widgets and theme templates are covered. Pages served some other way (a headless
-   front end, a static export, the REST API) are not.
-4. **Does it point at this site's uploads folder?** Links to another site in the network, a CDN
-   address, or a download-manager URL are not recognised. Plugins that move uploads to S3 or
-   similar are not supported.
+The tagged version is written over the PDF itself, so every link and bookmark gets it, wherever it
+is.
+
+1. **Is it tagged?** On the Equalify Iris screen it says "Tagged", and the media library's
+   Equalify Iris column says "Tagged by Equalify Iris".
+2. **Was it tagged by 0.2?** Its details say the background job is moving it to the PDF's own
+   address. It moves ten per site per run, when the site's turn comes. If the uploads folder could
+   not be written, it waits an hour and tries again.
+3. **Is a CDN or browser caching the PDF?** Open it with `?x=1` on the end. If that is tagged, the
+   plain address is cached. Pantheon's CDN is cleared for you. Elsewhere, purge the CDN, or wait for it to expire. Links on your own pages carry `?v=`,
+   so they are not affected.
+4. **Was the file replaced?** A media-replace plugin, or an upload over the same file, puts an
+   untagged file at the address. Send it to Iris for tagging again.
+5. **Plugins that move uploads to S3 or similar** are not supported. The tagged version is
+   written to the uploads folder on this server.
 
 ## A PDF is missing from the list
 
@@ -125,8 +129,13 @@ say) keeps it showing until it is replaced or unlinked.
 
 ## Starting over
 
-- **Delete one tagged copy:** **Delete Iris-Tagged Version**. Links go back to the original.
-- **Stop everything:** deactivate the plugin. Links go back; tagged files stay for when you
-  reactivate.
-- **Remove everything:** delete the plugin. Every tagged file, post meta and setting is removed, on the sites that used the plugin. On a very
+- **Delete one tagged version:** **Delete Iris-Tagged Version**. The original goes back at its
+  address. If the screen says the original could not be put back, nothing changed; the tagged version
+  stays. If it says the file had been replaced since it was tagged, that new file stays.
+- **Stop everything:** deactivate the plugin. Nothing goes back: tagged PDFs stay at their
+  addresses, and the originals stay beside them as `name-iris-original.pdf`. Reactivating carries
+  on. To put the originals back, delete their tagged versions first, or delete the plugin.
+- **Remove everything:** delete the plugin. Every original goes back at its address, and every
+  post meta and setting is removed, on the sites that used the plugin. A PDF whose file was
+  replaced since it was tagged keeps the new file. On a very
 large network the host may stop the request partway; what is left is never read again.

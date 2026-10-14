@@ -906,10 +906,10 @@ class Equalify_Iris_Discovery {
 	/**
 	 * PDF attachments on the current site, newest first.
 	 *
-	 * @param string $which  `listed`    public, or with a tagged copy to manage
+	 * @param string $which  `listed`    public, or with a tagged version to manage
 	 *                       `public`    linked from something visitors can see
 	 *                       `untracked` public, and never asked about
-	 *                       `untagged`  public, and with no tagged copy
+	 *                       `untagged`  public, and with no tagged version
 	 * @param int      $limit  0 for all of them.
 	 * @param int      $only   Restrict to one attachment.
 	 * @param string[] $status Only those with one of these statuses, as well.
@@ -1023,8 +1023,8 @@ class Equalify_Iris_Discovery {
 		}
 
 		if ( 'listed' === $which ) {
-			$where .= " AND ( $public OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} f WHERE f.post_id = a.ID AND f.meta_key = %s ) )";
-			$args   = array_merge( $args, $public_args, array( Equalify_Iris_Tagger::META_FILE ) );
+			$where .= " AND ( $public OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} f WHERE f.post_id = a.ID AND f.meta_key IN ( %s, %s ) ) )";
+			$args   = array_merge( $args, $public_args, array( Equalify_Iris_Tagger::META_HASH, Equalify_Iris_Tagger::META_FILE ) );
 
 			return array( $where, $args );
 		}

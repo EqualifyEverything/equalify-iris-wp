@@ -3,10 +3,14 @@
 ## The short version
 
 A PDF linked from a site's published pages is uploaded to Equalify Iris, which converts it to HTML. The plugin
-then asks Iris for the original PDF back with accessibility tags built from that HTML, saves it next
-to the original as `name-accessible.pdf`, and from then on every link to the original on that site
-points at the tagged copy instead. The links are changed as each page is shown, not in the
-database, so deactivating the plugin or deleting a tagged copy puts them back.
+then asks Iris for the original PDF back with accessibility tags built from that HTML, and writes
+it over the original's file. The original is kept beside it as `name-iris-original.pdf`. Every
+address the PDF ever had, including links from email and other websites, now opens the tagged
+version, and the web server serves it without running WordPress. Deleting the tagged version puts
+the original back; deactivating the plugin leaves things as they are.
+
+Replacing the file, not redirecting, is deliberate: hosts like Pantheon serve uploads straight from
+disk, with no way for a plugin to redirect them.
 
 ## Which PDFs are public
 
@@ -101,8 +105,14 @@ Each site's turn, switched to it:
    still public, checks its size and page count, and uploads it (`POST /sessions`, up to 60
    seconds).
 5. **Fetches one.** For **one** PDF that is ready, `POST /sessions/{id}/pdf` with `retag: true`,
-   waiting as long as the run has left, if that is at least 30 seconds. The tagged copy is saved,
-   added to the link map, and the session closed.
+   waiting as long as the run has left, if that is at least 30 seconds. The tagged version is
+   saved over the PDF (see [Saving the tagged version](#saving-the-tagged-version)), added to the
+   link map, and the session closed.
+6. **Moves old copies.** Up to ten PDFs tagged by 0.2.x, whose tagged copy is still
+   `name-accessible.pdf` beside the original, are moved to the PDF's own address the same way,
+   without reading them into memory. If the original's file is gone, the copy takes its place,
+   with no original to put back. If the copy is gone, or the PDF was replaced since, the copy and
+   its link are dropped and the PDF queued again. Once a site has none left, `equalify_iris_moved` says so, and nothing is queried again.
 
 Then the site's due time is set: now if it has more to read or queue; in a minute if it has queued
 PDFs (five while the network has no room at Iris); in two if it has PDFs at Iris; otherwise the row
@@ -141,17 +151,23 @@ A failed PDF stays failed until someone chooses **Send to Iris for Tagging** aga
 | `_equalify_iris_stage` | What Iris last said about it while at Iris: `queued`, `running`, `ready_for_review` |
 | `_equalify_iris_error` | Why it failed, or the last problem while retrying |
 | `_equalify_iris_attempts` | Problems in a row while retrying |
-| `_equalify_iris_file` | The tagged copy, relative to the uploads folder |
+| `_equalify_iris_original` | The kept original, relative to the uploads folder |
+| `_equalify_iris_hash` | MD5 of the tagged version written at the PDF's address, to tell whether it is still ours |
+| `_equalify_iris_sent` | MD5 of the file sent to Iris, so a file replaced meanwhile is not overwritten |
+| `_equalify_iris_file` | 0.2.x only: its tagged copy beside the original, until it is moved |
 | `_equalify_iris_warnings` | The tagger's warning codes, shown as notes in the list |
 | `_equalify_iris_linked_from` | One row per published post that links to it |
 | `_equalify_iris_shown_in` | One row per site-wide place (menu, widgets, templates…) that links to it |
 
 **On each post**: `_equalify_iris_links`, the PDFs it links to.
 
-`removed` means a site admin deleted the tagged copy. Automatic tagging leaves those alone.
+`removed` means a site admin deleted the tagged version. Automatic tagging leaves those alone.
 
-**Per site** (options): `equalify_iris_auto_tag` (the site's switch), `equalify_iris_map` (original
-file → tagged file, both relative to uploads, the tagged file ending in `?v=` and when it was saved), `equalify_iris_indexed` (how far through the content
+**Per site** (options): `equalify_iris_auto_tag` (the site's switch), `equalify_iris_map` (file →
+the same file with `?v=` and when its tagged version was saved, both relative to uploads; 0.2.x
+entries point at `-accessible.pdf` until moved), `equalify_iris_move_paused` (moving old copies
+failed to write, so it waits an hour), `equalify_iris_moved` (it has no 0.2.x copies left),
+`equalify_iris_indexed` (how far through the content
 it has read), `equalify_iris_places_stale`, `equalify_iris_profile` (its public types, taxonomies
 and sidebars), and `equalify_iris_scanned` (see below).
 
@@ -162,7 +178,9 @@ for uninstall to clean up).
 **Per network** (site options): `equalify_iris_api_url`, `equalify_iris_api_token`,
 `equalify_iris_network_auto`, `equalify_iris_generation`, `equalify_iris_read_generation`,
 `equalify_iris_lock`, `equalify_iris_last_run`, `equalify_iris_at_iris`, `equalify_iris_refused`, and
-`equalify_iris_home` (the address and environment type the job runs on; see below).
+`equalify_iris_home` (the address and environment type the job runs on; see below), and
+`equalify_iris_moving` (set on this version's first run, which makes every site that
+used the plugin due once, to move its old copies).
 
 ### Turning automatic tagging on for a thousand sites
 
@@ -171,6 +189,29 @@ queries whatever the network's size. A site whose `equalify_iris_scanned` does n
 content, queues its public PDFs, and records the number once it has queued them all. So the switch
 takes effect on every site without the settings screen visiting each one.
 
+## Saving the tagged version
+
+The file at the PDF's address is never missing or half-written, even if PHP is killed partway:
+
+1. Before uploading, the MD5 of the file sent to Iris is kept in `_equalify_iris_sent`.
+2. When the tagged PDF comes back, that MD5 is checked against the file now there. If the PDF was
+   replaced meanwhile (by a media-replace plugin, say), the tagged version is thrown away and the
+   PDF queued again.
+3. The tagged PDF is written to a temporary file beside the original.
+4. The first time, the original is **copied** to `name-iris-original.pdf`, never moved away.
+5. The temporary file is renamed over the original, which replaces it in one step. Pantheon's
+   file system does not rename files, so where a rename fails it is copied over instead, its size
+   checked, and the temporary file deleted. If that copy stops partway, the original is copied
+   back; failing that, it stays on record, so deleting the tagged version can try again.
+6. `_equalify_iris_hash` records the tagged file's MD5, the attachment's `filesize` is updated,
+   and the link map gets the new `?v=`.
+
+Tagging it again sends the kept original to Iris, not the tagged version. Deleting the tagged
+version puts the kept original back over the address the same way, but only if the file there still matches
+`_equalify_iris_hash`, or is gone. If it does not match, someone put a new file there; it stays,
+and the kept original is deleted, and the screen says that too. If the kept original is missing,
+or cannot be written, nothing changes and the screen says so.
+
 ## Swapping the links
 
 On the front end, a site with any tagged PDFs buffers the whole page from `template_redirect` and
@@ -178,17 +219,21 @@ changes it once it is finished, so content, menus, widgets, templates and links 
 PHP are all covered. Every `href`, `data` or `src` attribute (the File block's inline preview uses
 `data`; embeds and iframes use `src`)
 that points at a file in this site's uploads folder, and has an entry in the link map, is pointed at
-the tagged copy, with `?v=` and when that copy was saved. A re-tagged PDF keeps its filename, so the
-new address keeps CDNs and browsers from serving the copy it replaced. The link's own query string
+the same file with `?v=` and when its tagged version was saved, so CDNs and browsers that cached
+the original fetch it again. (The file itself is already the tagged version; 0.2.x entries still
+point at `-accessible.pdf` until that copy is moved.) The link's own query string
 follows ours, and its fragment is kept. Links to other sites, and to PDFs with no
-tagged copy, are left alone. The map is one autoloaded option, so this costs no queries (once it
+tagged version, are left alone. The map is one autoloaded option, so this costs no queries (once it
 passes 64 KB, thousands of PDFs, it stops being autoloaded and costs one), and a site with no
 tagged PDFs is not buffered at all. If the page is too big for PHP's regular expressions, it is
 sent as it was.
 
-When a tagged copy is saved or deleted, the posts that link to it are cleaned from the cache
-(`clean_post_cache()`, which page-cache plugins also purge on), and `equalify_iris_links_changed`
-fires with the attachment id for anything else. Menus, widgets and archives showing the PDF are
+When a tagged version is saved or deleted, the posts that link to it are cleaned from the cache
+(`clean_post_cache()`, which page-cache plugins also purge on). On Pantheon, the PDF's own address
+is purged from the CDN with `pantheon_clear_edge_paths()`, which the platform provides (through
+Pantheon Advanced Page Cache's wrapper when that is active). A subdirectory site's uploads are
+reachable with and without the site's path, so both are purged. `equalify_iris_links_changed` fires
+with the attachment id for any other CDN or cache. Menus, widgets and archives showing the PDF are
 not purged: a page cache keeps serving their old links until it is cleared.
 
 ## Lifecycle
@@ -196,13 +241,13 @@ not purged: a page cache keeps serving their old links until it is cleared.
 | Event | What happens |
 | --- | --- |
 | A page linking to a PDF is published | The PDF is queued, if automatic tagging is on |
-| That page is unpublished | The PDF leaves the list, unless it has a tagged copy to delete. A tagged copy stays and links still switch |
-| **Delete Iris-Tagged Version** | Tagged file deleted, map entry removed, status `removed` |
-| The attachment is deleted | Its tagged file and map entry go with it |
-| Deactivate | The job is unscheduled. Links go back to the originals because nothing swaps them. Tagged files stay |
+| That page is unpublished | The PDF leaves the list, unless it has a tagged version to delete. The tagged version stays at its address |
+| **Delete Iris-Tagged Version** | The kept original is renamed back to the PDF's address (see above), map entry removed, status `removed` |
+| The attachment is deleted | WordPress deletes the file; the kept original and map entry go with it |
+| Deactivate | The job is unscheduled. Tagged versions stay at their addresses and originals stay beside them, so visitors notice nothing. Links lose their `?v=` |
 | Activate | Sites that used the plugin read their content again, in case it changed meanwhile, and carry on |
 | The database is copied to another address or environment type | The copy is paused: no runs, nothing sent to Iris, so live's PDFs at Iris stay live's. **Tag PDFs Here Too**, or `wp equalify-iris resume`, records the new place and sends the PDFs that were at Iris again from there |
-| Delete the plugin | `uninstall.php` deletes every tagged file, all our post meta, options and blogmeta, on the sites marked `equalify_iris_used` only, with direct queries |
+| Delete the plugin | `uninstall.php`, on the sites marked `equalify_iris_used` only, with direct queries: puts each kept original back where the file still matches `_equalify_iris_hash` (or is gone), deletes it otherwise, deletes 0.2.x `-accessible.pdf` copies, then all our post meta, options and blogmeta |
 
 ## The files
 
@@ -220,6 +265,7 @@ includes/class-links.php       The front-end link swap
 includes/class-cli.php         wp equalify-iris
 admin/class-admin.php          Both Equalify Iris screens, their actions, and the dashboard notice
 admin/class-list-table.php     The list of a site's public PDFs
+admin/class-media.php          The media library's Equalify Iris column and attachment field
 ```
 
 ## Security
@@ -228,4 +274,6 @@ admin/class-list-table.php     The list of a site's public PDFs
   `manage_options`; the network screen and its actions need `manage_network_options`.
 - A PDF is checked for being public when it is queued and again just before it is uploaded.
 - The token field is a password field and is never echoed back.
-- The tagged copy is a plain file, not an attachment, so it is never itself queued for tagging.
+- The kept original is a plain file, not an attachment, so it is never itself listed or queued.
+- Every kept-original path read from post meta must end in `-iris-original.pdf` (or 0.2.x's
+  `-accessible.pdf`) and resolve inside the uploads folder before it is renamed or deleted.

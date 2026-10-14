@@ -24,7 +24,7 @@ ddev wp equalify-iris tag 5       # queue attachment 5 (or use the Equalify Iris
 ./tick.sh 3                       # run the network's background job three times, then show the status
 ```
 
-A PDF takes two or three runs against the mock: one to upload, then one to fetch the tagged copy
+A PDF takes two or three runs against the mock: one to upload, then one to fetch the tagged version
 once it has "converted". A run covers every site that is due; `./tick.sh 3
 https://equalify-iris-test.ddev.site/research` shows another site's status afterwards.
 
@@ -68,10 +68,12 @@ Every pull request gets the same checks and a review: see [CI.md](CI.md).
 | Which links are switched | `includes/class-links.php` |
 | The screens, their actions, or the notice | `admin/class-admin.php` |
 | The list's columns, or a warning's wording | `admin/class-list-table.php` |
+| What the media library says about a PDF | `admin/class-media.php` |
+| How a tagged version is saved, put back, or moved from 0.2.x | `save()`, `remove()` and `move_old_copies()` in `includes/class-tagger.php`, and `uninstall.php` |
 | A CLI command | `includes/class-cli.php` |
 
 New classes get a `require_once` in `equalify-iris.php` and an `init()` call in
-`includes/class-plugin.php`. There is no autoloader; there are eleven files.
+`includes/class-plugin.php`. There is no autoloader; there are twelve files.
 
 ## The Iris API
 
@@ -112,7 +114,7 @@ Things that are easy to get wrong:
 - **What comes back from Iris is trusted.** The tagged PDF replaces the original for visitors. It
   is checked for `%PDF-` and `%%EOF` and a sensible size (twice the original plus 5 MB; anything
   bigger is not even read into memory), written to a temporary file and renamed
-  into place, but nothing checks what is inside it. Point the plugin only at a deployment you
+  over the PDF itself, but nothing checks what is inside it. Point the plugin only at a deployment you
   trust as much as someone who can upload media.
 
 ## Conventions
@@ -143,7 +145,12 @@ Match the code that is there:
 | Reading a link map entry as a path | Entries can end in `?v=<time>`. Build addresses with `Equalify_Iris_Links::url()`. |
 | A checkbox in a settings form | An unchecked box sends nothing. Treat a missing field as off. |
 | `get_error_data()` returning null | `$error->get_error_data()['status']` warns. Use `Equalify_Iris_API_Client::status()`. |
-| Making the tagged copy an attachment | It would show up in the media library as a second PDF. It is a plain file on purpose. |
+| Making the kept original an attachment | It would show up in the media library as a second PDF. It is a plain file on purpose. |
+| Moving the original away before writing the tagged version | For a moment the PDF's address has nothing at it, and if PHP dies there, nothing for good. Copy the original, then rename the tagged version over it. |
+| Calling `rename()` on an upload | Pantheon's file system does not rename files. Use `Tagger::replace()`, which copies and checks where a rename fails. |
+| Uploading `get_attached_file()` | Once tagged, that is the tagged version. Send `source()`, the kept original. |
+| Putting the original back without checking `is_ours()` | The file may have been replaced since it was tagged. Overwriting it would throw away someone's upload. |
+| A path from post meta, unchecked | Run it through `stored_path()`, which insists on our suffix and the uploads folder, before renaming or deleting it. |
 | Queuing a PDF without `queue()` | `queue()` refuses PDFs that are not public. Setting the status meta directly skips that check, though the upload step checks again. |
 | A post type registered late | The profile is saved on `wp_loaded`. A type registered after that is not counted. |
 | Testing links while logged in | Logged-in pages skip most page caches, so a cache problem only shows logged out. |

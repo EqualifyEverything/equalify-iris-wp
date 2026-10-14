@@ -4,9 +4,9 @@
  *
  * The list of a site's public PDFs on the Equalify Iris screen: every PDF linked
  * from published content, a menu, a widget or the theme's templates, plus any
- * that still has a tagged copy to delete.
- * Each one can be given accessibility tags, have its tagged copy opened, or have
- * it deleted, one at a time or in bulk.
+ * that still has a tagged version to delete.
+ * Each one can be given accessibility tags, have its tagged version opened, or
+ * have it deleted, one at a time or in bulk.
  *
  * Each row says where its PDF is up to: waiting, at Iris and what Iris is doing
  * with it, and how long ago that started. When something goes wrong, Iris's own
@@ -241,7 +241,11 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 
 		switch ( Equalify_Iris_Tagger::status( $attachment_id ) ) {
 			case Equalify_Iris_Tagger::TAGGED:
-				return array( __( 'Links on this site open the Iris-tagged version.', 'equalify-iris' ) );
+				if ( get_post_meta( $attachment_id, Equalify_Iris_Tagger::META_FILE, true ) ) {
+					return array( __( 'Links on this site open the Iris-tagged version. The background job is moving it to the PDF’s own address, so links from anywhere else open it too.', 'equalify-iris' ) );
+				}
+
+				return array( __( 'The PDF’s address opens the Iris-tagged version, so every link to it does.', 'equalify-iris' ) );
 
 			case Equalify_Iris_Tagger::QUEUED:
 				$lines = array(
@@ -288,7 +292,7 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 				return array_filter( $lines );
 
 			case Equalify_Iris_Tagger::REMOVED:
-				return array( __( 'The Iris-tagged version was deleted, so links open the original.', 'equalify-iris' ) );
+				return array( __( 'The Iris-tagged version was deleted, and the original is back at its address.', 'equalify-iris' ) );
 
 			default:
 				return array();
@@ -383,7 +387,7 @@ class Equalify_Iris_List_Table extends WP_List_Table {
 			$actions['delete'] = sprintf(
 				'<a href="%s" class="submitdelete equalify-iris-confirm" data-confirm="%s">%s</a>',
 				esc_url( self::action_url( 'equalify_iris_remove', $attachment_id ) ),
-				esc_attr__( 'Delete the Iris-tagged version? Links will point at the original PDF again.', 'equalify-iris' ),
+				esc_attr__( 'Delete the Iris-tagged version? The original PDF goes back at its address, and every link opens it again.', 'equalify-iris' ),
 				esc_html__( 'Delete Iris-Tagged Version', 'equalify-iris' )
 			);
 		}

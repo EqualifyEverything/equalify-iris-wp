@@ -98,7 +98,7 @@ class Equalify_Iris_CLI {
 	}
 
 	/**
-	 * Delete Iris-tagged versions, so links point at the originals again.
+	 * Delete Iris-tagged versions, and put the original PDFs back at their addresses.
 	 *
 	 * ## OPTIONS
 	 *
@@ -114,13 +114,20 @@ class Equalify_Iris_CLI {
 				continue;
 			}
 
-			if ( ! get_post_meta( $id, Equalify_Iris_Tagger::META_FILE, true ) ) {
+			if ( ! Equalify_Iris_Tagger::has_version( $id ) ) {
 				WP_CLI::warning( "{$id} has no Iris-tagged version." );
 				continue;
 			}
 
-			Equalify_Iris_Tagger::remove( $id );
-			WP_CLI::log( "Removed the Iris-tagged version of {$id}." );
+			$done = Equalify_Iris_Tagger::remove( $id );
+
+			if ( '' === $done ) {
+				WP_CLI::warning( "The original of {$id} could not be put back: it is missing, or the uploads folder could not be written. Nothing changed." );
+			} elseif ( Equalify_Iris_Tagger::REPLACED === $done ) {
+				WP_CLI::log( "Removed the Iris-tagged version of {$id}. Its file had been replaced since it was tagged, so the new file stays and the original from before was deleted." );
+			} else {
+				WP_CLI::log( "Removed the Iris-tagged version of {$id}. The original is back at its address." );
+			}
 		}
 	}
 

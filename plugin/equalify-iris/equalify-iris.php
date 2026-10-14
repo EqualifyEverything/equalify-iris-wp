@@ -44,6 +44,7 @@ require_once EQUALIFY_IRIS_PATH . 'includes/class-plugin.php';
 if ( is_admin() ) {
 	require_once EQUALIFY_IRIS_PATH . 'admin/class-admin.php';
 	require_once EQUALIFY_IRIS_PATH . 'admin/class-list-table.php';
+	require_once EQUALIFY_IRIS_PATH . 'admin/class-media.php';
 }
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
